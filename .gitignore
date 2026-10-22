@@ -137,6 +137,7 @@ thunar/*.loT
 thunar/.*.swp
 thunar/thunar
 thunar/thunar.a
+thunar/libthunar.a
 thunar/thunar-dbus-freedesktop-interfaces.[ch]
 thunar/thunar-dbus-service-infos.[ch]
 thunar/thunar-fallback-icon.c
@@ -155,6 +156,10 @@ thunarx/.*.swp
 thunarx/*.pc
 thunarx/*.gir
 thunarx/*.typelib
+thunarx/abicheck.sh.log
+thunarx/abicheck.sh.trs
+thunarx/test-suite.log
+po/thunar.pot
 thunarx/thunarx-alias*.[ch]
 thunarx/thunarx-config.h
 *.o

@@ -9,6 +9,7 @@ mkdir -p "$STATE_DIR"
 exec 9>"$STATE_DIR/setup.lock"
 flock -n 9 || { echo 'Another Thunar setup is already running.' >&2; exit 1; }
 printf '%s\n' "$$" > "$STATE_DIR/setup.pid"
+rm -f "$STATE_DIR/setup.exit-status"
 printf 'running\n' > "$STATE_DIR/setup.status"
 trap 'result=$?; printf "%s\n" "$result" > "$STATE_DIR/setup.exit-status"; if (( result == 0 )); then printf "complete\n" > "$STATE_DIR/setup.status"; else printf "failed\n" > "$STATE_DIR/setup.status"; fi' EXIT
 

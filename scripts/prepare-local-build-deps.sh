@@ -15,6 +15,7 @@ done
 python3 - "$DEPS_DIR" <<'PY'
 from pathlib import Path
 import os
+import re
 import sys
 
 root = Path(sys.argv[1])
@@ -44,6 +45,8 @@ for path in candidates:
     if not path.is_file():
         continue
     text = path.read_text()
+    text = re.sub(r'''(?m)^(prefix\s*=\s*)(["']?)/usr\2$''',
+                  lambda match: match[1] + match[2] + prefix + match[2], text)
     for directory in ('/usr/share/gtk-doc', '/usr/share/xfce4'):
         text = text.replace(directory, str(root) + directory)
     path.write_text(text)
