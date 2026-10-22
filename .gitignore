@@ -26,6 +26,11 @@ stamp-h1
 [Tt]hunar-*.tar.gz
 core.*
 core
+.local-build/
+thunar/test-rg-search
+thunar/test-rg-search.log
+thunar/test-rg-search.trs
+thunar/test-suite.log
 *.core
 *.desktop
 *.desktop.in

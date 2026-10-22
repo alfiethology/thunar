@@ -21,6 +21,12 @@ bin_SCRIPTS =								\
 bin_PROGRAMS =								\
 	thunar
 
+check_PROGRAMS = test-rg-search
+TESTS = $(check_PROGRAMS)
+test_rg_search_SOURCES = ../tests/test-rg-search.c thunar-rg-search.c thunar-rg-search.h
+test_rg_search_CFLAGS = $(GIO_CFLAGS)
+test_rg_search_LDADD = $(GIO_LIBS)
+
 thunar_built_sources =							\
 	thunar-marshal.c							\
 	thunar-marshal.h							\
@@ -127,6 +133,8 @@ thunar_SOURCES =							\
 	thunar-job-operation-history.h					\
 	thunar-list-model.c						\
 	thunar-list-model.h						\
+	thunar-rg-search.c						\
+	thunar-rg-search.h						\
 	thunar-location-bar.c						\
 	thunar-location-bar.h						\
 	thunar-location-button.c					\

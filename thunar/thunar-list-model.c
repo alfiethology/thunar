@@ -39,6 +39,7 @@
 #include <thunar/thunar-list-model.h>
 #include <thunar/thunar-preferences.h>
 #include <thunar/thunar-private.h>
+#include <thunar/thunar-rg-search.h>
 #include <thunar/thunar-user.h>
 #include <thunar/thunar-simple-job.h>
 #include <thunar/thunar-util.h>
@@ -232,7 +233,9 @@ static gchar**            thunar_list_model_split_search_query          (const g
 static gboolean           thunar_list_model_search_terms_match          (gchar                       **terms,
                                                                          gchar                        *str);
 
-static void               thunar_list_model_search_error                (ThunarJob                    *job);
+static void               thunar_list_model_search_error                (ThunarJob                    *job,
+                                                                         GError                       *error,
+                                                                         ThunarListModel              *model);
 static void               thunar_list_model_search_finished             (ThunarJob                    *job,
                                                                          ThunarListModel              *store);
 static gboolean           thunar_list_model_add_search_files            (gpointer user_data);
@@ -1548,6 +1551,7 @@ thunar_list_model_files_added (ThunarFolder    *folder,
   GList       *lp;
   ThunarFile  *file;
   gboolean     matched;
+  gboolean     native_search;
   gchar       *name_n;
 
   /* pass the list directly if not currently showing search results */
@@ -1558,12 +1562,20 @@ thunar_list_model_files_added (ThunarFolder    *folder,
     }
 
   /* otherwise, filter out files that don't match the current search terms */
+  native_search = g_file_is_native (thunar_file_get_file (thunar_folder_get_corresponding_file (folder)));
   filtered = NULL;
   for (lp = files; lp != NULL; lp = lp->next)
     {
       /* take a reference on that file */
       file = THUNAR_FILE (g_object_ref (G_OBJECT (lp->data)));
       _thunar_return_if_fail (THUNAR_IS_FILE (file));
+
+      /* Keep folder notifications consistent with rg's file-only results. */
+      if (native_search && (!thunar_file_is_regular (file) || thunar_file_is_symlink (file)))
+        {
+          g_object_unref (file);
+          continue;
+        }
 
       name_n = (gchar *)thunar_file_get_display_name (file);
       name_n = thunar_g_utf8_normalize_for_search (name_n, TRUE, TRUE);
@@ -2255,14 +2267,15 @@ static gboolean
 thunar_list_model_add_search_files (gpointer user_data)
 {
   ThunarListModel *model = THUNAR_LIST_MODEL (user_data);
+  GList           *files;
 
   g_mutex_lock (&model->mutex_files_to_add);
-
-  thunar_list_model_insert_files (model, model->files_to_add);
-  g_list_free (model->files_to_add);
+  files = model->files_to_add;
   model->files_to_add = NULL;
-
   g_mutex_unlock (&model->mutex_files_to_add);
+
+  thunar_list_model_insert_files (model, files);
+  thunar_g_list_free_full (files);
 
   return TRUE;
 }
@@ -2324,6 +2337,55 @@ thunar_list_model_search_terms_match (gchar **terms,
 
 
 
+typedef struct
+{
+  ThunarListModel *model;
+  ThunarJob       *job;
+  GFile           *directory;
+  gchar         **terms;
+} ThunarListModelRgSearch;
+
+
+
+static void
+thunar_list_model_rg_file (const gchar *path,
+                           gpointer     user_data)
+{
+  ThunarListModelRgSearch *search = user_data;
+  gchar                  *display_name;
+  gchar                  *normalized;
+  GFile                  *location;
+  ThunarFile             *file;
+  gboolean                matches;
+
+  /* Match only the basename, using the same literal, case-insensitive,
+   * accent-insensitive terms as the search entry. Do not stat nonmatches. */
+  display_name = g_filename_display_basename (path);
+  normalized = thunar_g_utf8_normalize_for_search (display_name, TRUE, TRUE);
+  matches = thunar_list_model_search_terms_match (search->terms, normalized);
+  g_free (normalized);
+  g_free (display_name);
+  if (!matches || exo_job_is_cancelled (EXO_JOB (search->job)))
+    return;
+
+  location = g_file_resolve_relative_path (search->directory, path);
+  file = thunar_file_get (location, NULL);
+  g_object_unref (location);
+  if (file == NULL)
+    return;
+
+  /* Cancellation takes the same lock so an old query cannot append results
+   * after the main thread has cleared the queue for a new query. */
+  g_mutex_lock (&search->model->mutex_files_to_add);
+  if (!exo_job_is_cancelled (EXO_JOB (search->job)))
+    search->model->files_to_add = g_list_prepend (search->model->files_to_add, file);
+  else
+    g_object_unref (file);
+  g_mutex_unlock (&search->model->mutex_files_to_add);
+}
+
+
+
 static gboolean
 _thunar_job_search_directory (ThunarJob  *job,
                                GArray     *param_values,
@@ -2338,6 +2400,8 @@ _thunar_job_search_directory (ThunarJob  *job,
   ThunarRecursiveSearchMode   mode;
   enum ThunarListModelSearch  search_type;
   gboolean                    show_hidden;
+  gboolean                    success = TRUE;
+  ThunarListModelRgSearch      search;
 
   search_type = THUNAR_LIST_MODEL_SEARCH_NON_RECURSIVE;
 
@@ -2346,7 +2410,6 @@ _thunar_job_search_directory (ThunarJob  *job,
 
   /* determine the current recursive search mode */
   g_object_get (G_OBJECT (preferences), "misc-recursive-search", &mode, NULL);
-  g_object_get (G_OBJECT (preferences), "last-show-hidden", &show_hidden, NULL);
 
   g_object_unref (preferences);
 
@@ -2356,20 +2419,35 @@ _thunar_job_search_directory (ThunarJob  *job,
   model = g_value_get_object (&g_array_index (param_values, GValue, 0));
   search_query_c = g_value_get_string (&g_array_index (param_values, GValue, 1));
   directory = g_value_get_object (&g_array_index (param_values, GValue, 2));
+  show_hidden = g_value_get_boolean (&g_array_index (param_values, GValue, 3));
 
   search_query_c_terms = thunar_list_model_split_search_query (search_query_c, error);
   if (search_query_c_terms == NULL)
     return FALSE;
 
-  is_source_device_local = thunar_g_file_is_on_local_device (thunar_file_get_file (directory));
-  if (mode == THUNAR_RECURSIVE_SEARCH_ALWAYS || (mode == THUNAR_RECURSIVE_SEARCH_LOCAL && is_source_device_local))
-    search_type = THUNAR_LIST_MODEL_SEARCH_RECURSIVE;
+  if (g_file_is_native (thunar_file_get_file (directory)))
+    {
+      search.model = model;
+      search.job = job;
+      search.directory = thunar_file_get_file (directory);
+      search.terms = search_query_c_terms;
+      success = thunar_rg_search (search.directory, show_hidden,
+                                 exo_job_get_cancellable (EXO_JOB (job)),
+                                 thunar_list_model_rg_file, &search, error);
+    }
+  else
+    {
+      /* Virtual and remote folders cannot be enumerated by rg. */
+      is_source_device_local = thunar_g_file_is_on_local_device (thunar_file_get_file (directory));
+      if (mode == THUNAR_RECURSIVE_SEARCH_ALWAYS || (mode == THUNAR_RECURSIVE_SEARCH_LOCAL && is_source_device_local))
+        search_type = THUNAR_LIST_MODEL_SEARCH_RECURSIVE;
 
-  thunar_list_model_search_folder (model, job, thunar_file_dup_uri (directory), search_query_c_terms, search_type, show_hidden);
+      thunar_list_model_search_folder (model, job, thunar_file_dup_uri (directory), search_query_c_terms, search_type, show_hidden);
+    }
 
   g_strfreev (search_query_c_terms);
 
-  return TRUE;
+  return success;
 }
 
 
@@ -2379,10 +2457,11 @@ thunar_list_model_job_search_directory (ThunarListModel *model,
                                         const gchar     *search_query_c,
                                         ThunarFile      *directory)
 {
-  return thunar_simple_job_new (_thunar_job_search_directory, 3,
+  return thunar_simple_job_new (_thunar_job_search_directory, 4,
                                 THUNAR_TYPE_LIST_MODEL, model,
                                 G_TYPE_STRING,          search_query_c,
-                                THUNAR_TYPE_FILE,       directory);
+                                THUNAR_TYPE_FILE,       directory,
+                                G_TYPE_BOOLEAN,         model->show_hidden);
 }
 
 
@@ -2393,7 +2472,9 @@ thunar_list_model_cancel_search_job (ThunarListModel *model)
   /* cancel the ongoing search if there is one */
   if (model->recursive_search_job)
     {
+      g_mutex_lock (&model->mutex_files_to_add);
       exo_job_cancel (EXO_JOB (model->recursive_search_job));
+      g_mutex_unlock (&model->mutex_files_to_add);
 
       g_signal_handlers_disconnect_matched (model->recursive_search_job, G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, model);
       g_object_unref (model->recursive_search_job);
@@ -2404,9 +2485,11 @@ thunar_list_model_cancel_search_job (ThunarListModel *model)
 
 
 static void
-thunar_list_model_search_error (ThunarJob *job)
+thunar_list_model_search_error (ThunarJob       *job,
+                                GError          *error,
+                                ThunarListModel *model)
 {
-  g_error ("Error while searching recursively");
+  g_signal_emit (model, list_model_signals[ERROR], 0, error);
 }
 
 
@@ -2471,7 +2554,10 @@ thunar_list_model_search_folder (ThunarListModel           *model,
    * which allows them to appear in the search results. */
   enumerator = g_file_enumerate_children (directory, namespace, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, cancellable, NULL);
   if (enumerator == NULL)
-    return;
+    {
+      g_object_unref (directory);
+      return;
+    }
 
   /* go through every file in the folder and check if it matches */
   while (exo_job_is_cancelled (EXO_JOB (job)) == FALSE)
@@ -2523,7 +2609,11 @@ thunar_list_model_search_folder (ThunarListModel           *model,
 
       /* search for all substrings */
       if (thunar_list_model_search_terms_match (search_query_c_terms, display_name_c))
-        files_found = g_list_prepend (files_found, thunar_file_get (file, NULL));
+        {
+          ThunarFile *match = thunar_file_get (file, NULL);
+          if (match != NULL)
+            files_found = g_list_prepend (files_found, match);
+        }
 
       /* free memory */
       g_free (display_name_c);
@@ -2534,11 +2624,11 @@ thunar_list_model_search_folder (ThunarListModel           *model,
   g_object_unref (enumerator);
   g_object_unref (directory);
 
-  if (exo_job_is_cancelled (EXO_JOB (job)))
-    return;
-
   g_mutex_lock (&model->mutex_files_to_add);
-  model->files_to_add = g_list_concat (model->files_to_add, files_found);
+  if (!exo_job_is_cancelled (EXO_JOB (job)))
+    model->files_to_add = g_list_concat (model->files_to_add, files_found);
+  else
+    thunar_g_list_free_full (files_found);
   g_mutex_unlock (&model->mutex_files_to_add);
 }
 
@@ -2670,13 +2760,13 @@ thunar_list_model_set_folder (ThunarListModel *store,
               /* search the current folder
                * start a new recursive_search_job */
               store->recursive_search_job = thunar_list_model_job_search_directory (store, search_query_c, thunar_folder_get_corresponding_file (folder));
-              exo_job_launch (EXO_JOB (store->recursive_search_job));
 
-              g_signal_connect (store->recursive_search_job, "error", G_CALLBACK (thunar_list_model_search_error), NULL);
+              g_signal_connect (store->recursive_search_job, "error", G_CALLBACK (thunar_list_model_search_error), store);
               g_signal_connect (store->recursive_search_job, "finished", G_CALLBACK (thunar_list_model_search_finished), store);
 
               /* add new results to the model every X ms */
               store->update_search_results_timeout_id = g_timeout_add (500, thunar_list_model_add_search_files, store);
+              exo_job_launch (EXO_JOB (store->recursive_search_job));
             }
           g_free (search_query_c);
           files = NULL;
