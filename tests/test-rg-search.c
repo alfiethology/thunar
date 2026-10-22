@@ -147,6 +147,32 @@ run_filtered (Fixture                   *fixture,
 }
 
 static void
+test_inaccessible_paths (Fixture *fixture,
+                         gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  gchar *locked = g_build_filename (fixture->path, "locked", NULL);
+
+  write_file (fixture, "readable.txt", "needle");
+  write_file (fixture, "locked/unreadable.txt", "needle");
+  g_assert_cmpint (g_chmod (locked, 0000), ==, 0);
+  if (g_access (locked, R_OK | X_OK) == 0)
+    g_test_skip ("This user can read directories even without permission bits");
+  else
+    {
+      run_filtered (fixture, options, 1);
+      g_assert_true (g_hash_table_contains (fixture->paths, "readable.txt"));
+      g_free (options->content);
+      options->content = g_strdup ("needle");
+      run_filtered (fixture, options, 1);
+      g_assert_true (g_hash_table_contains (fixture->paths, "readable.txt"));
+    }
+  g_assert_cmpint (g_chmod (locked, 0700), ==, 0);
+  g_free (locked);
+  thunar_search_options_free (options);
+}
+
+static void
 test_name_and_content (Fixture *fixture,
                        gconstpointer unused)
 {
@@ -322,6 +348,19 @@ test_process_errors (Fixture *fixture,
 
   write_file (fixture, "rg", "#!/bin/sh\nexit 2\n");
   g_assert_cmpint (g_chmod (executable, 0700), ==, 0);
+  g_assert_true (thunar_rg_search (fixture->directory, FALSE, fixture->cancellable,
+                                  collect, fixture, &error));
+  g_assert_no_error (error);
+
+  write_file (fixture, "rg", "#!/bin/sh\nprintf './readable.txt\\0'\nexit 2\n");
+  g_assert_cmpint (g_chmod (executable, 0700), ==, 0);
+  g_assert_true (thunar_rg_search (fixture->directory, FALSE, fixture->cancellable,
+                                  collect, fixture, &error));
+  g_assert_no_error (error);
+  g_assert_true (g_hash_table_contains (fixture->paths, "readable.txt"));
+
+  write_file (fixture, "rg", "#!/bin/sh\nexit 3\n");
+  g_assert_cmpint (g_chmod (executable, 0700), ==, 0);
   g_assert_false (thunar_rg_search (fixture->directory, FALSE, fixture->cancellable,
                                    collect, fixture, &error));
   g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
@@ -348,6 +387,7 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   g_test_add ("/rg/files", Fixture, NULL, setup, test_files, teardown);
   g_test_add ("/rg/empty", Fixture, NULL, setup, test_empty, teardown);
+  g_test_add ("/rg/inaccessible-paths", Fixture, NULL, setup, test_inaccessible_paths, teardown);
   g_test_add ("/rg/pre-cancelled", Fixture, NULL, setup, test_pre_cancelled, teardown);
   g_test_add ("/rg/process-errors", Fixture, NULL, setup, test_process_errors, teardown);
   g_test_add ("/rg/advanced/name-and-content", Fixture, NULL, setup, test_name_and_content, teardown);

@@ -344,11 +344,14 @@ thunar_rg_search_full (GFile                     *directory,
 
   if (err == NULL && !g_cancellable_set_error_if_cancelled (cancellable, &err))
     {
-      /* rg uses status 1 for an empty file list. */
+      /* rg uses status 1 for no matches and status 2 when some paths could
+       * not be read. Keep the accessible results without showing a dialog
+       * for expected permission errors during recursive searches. Spawn,
+       * stream and cancellation errors are still reported separately. */
       if (!g_subprocess_get_if_exited (process)
-          || g_subprocess_get_exit_status (process) > 1)
+          || g_subprocess_get_exit_status (process) > 2)
         g_set_error_literal (&err, G_IO_ERROR, G_IO_ERROR_FAILED,
-                             "ripgrep could not search all files in this directory");
+                             "ripgrep could not complete the search");
     }
 
   g_object_unref (stream);
