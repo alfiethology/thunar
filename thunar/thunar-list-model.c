@@ -307,6 +307,7 @@ struct _ThunarListModel
    * and adds them in the model. The list is then emptied.
    */
   ThunarJob     *recursive_search_job;
+  ThunarSearchOptions *advanced_search;
   GList         *files_to_add;
   GMutex         mutex_files_to_add;
 
@@ -594,6 +595,7 @@ thunar_list_model_finalize (GObject *object)
   g_free (store->date_custom_style);
 
   g_strfreev (store->search_terms);
+  thunar_search_options_free (store->advanced_search);
 
   (*G_OBJECT_CLASS (thunar_list_model_parent_class)->finalize) (object);
 }
@@ -1562,6 +1564,11 @@ thunar_list_model_files_added (ThunarFolder    *folder,
     }
 
   /* otherwise, filter out files that don't match the current search terms */
+  /* Advanced searches are snapshots, including content and metadata filters.
+   * rg supplies their results; refreshing the view runs the full search again. */
+  if (store->advanced_search != NULL)
+    return;
+
   native_search = g_file_is_native (thunar_file_get_file (thunar_folder_get_corresponding_file (folder)));
   filtered = NULL;
   for (lp = files; lp != NULL; lp = lp->next)
@@ -2255,6 +2262,23 @@ thunar_list_model_get_job (ThunarListModel  *store)
 
 
 void
+thunar_list_model_set_advanced_search (ThunarListModel           *store,
+                                      const ThunarSearchOptions *options)
+{
+  ThunarSearchOptions *copy = thunar_search_options_copy (options);
+  thunar_search_options_free (store->advanced_search);
+  store->advanced_search = copy;
+}
+
+const ThunarSearchOptions *
+thunar_list_model_get_advanced_search (ThunarListModel *store)
+{
+  return store->advanced_search;
+}
+
+
+
+void
 thunar_list_model_set_job (ThunarListModel  *store,
                            ThunarJob        *job)
 {
@@ -2360,11 +2384,15 @@ thunar_list_model_rg_file (const gchar *path,
 
   /* Match only the basename, using the same literal, case-insensitive,
    * accent-insensitive terms as the search entry. Do not stat nonmatches. */
-  display_name = g_filename_display_basename (path);
-  normalized = thunar_g_utf8_normalize_for_search (display_name, TRUE, TRUE);
-  matches = thunar_list_model_search_terms_match (search->terms, normalized);
-  g_free (normalized);
-  g_free (display_name);
+  matches = TRUE;
+  if (search->terms != NULL)
+    {
+      display_name = g_filename_display_basename (path);
+      normalized = thunar_g_utf8_normalize_for_search (display_name, TRUE, TRUE);
+      matches = thunar_list_model_search_terms_match (search->terms, normalized);
+      g_free (normalized);
+      g_free (display_name);
+    }
   if (!matches || exo_job_is_cancelled (EXO_JOB (search->job)))
     return;
 
@@ -2402,6 +2430,7 @@ _thunar_job_search_directory (ThunarJob  *job,
   gboolean                    show_hidden;
   gboolean                    success = TRUE;
   ThunarListModelRgSearch      search;
+  const ThunarSearchOptions  *options;
 
   search_type = THUNAR_LIST_MODEL_SEARCH_NON_RECURSIVE;
 
@@ -2420,6 +2449,7 @@ _thunar_job_search_directory (ThunarJob  *job,
   search_query_c = g_value_get_string (&g_array_index (param_values, GValue, 1));
   directory = g_value_get_object (&g_array_index (param_values, GValue, 2));
   show_hidden = g_value_get_boolean (&g_array_index (param_values, GValue, 3));
+  options = g_value_get_boxed (&g_array_index (param_values, GValue, 4));
 
   search_query_c_terms = thunar_list_model_split_search_query (search_query_c, error);
   if (search_query_c_terms == NULL)
@@ -2430,10 +2460,21 @@ _thunar_job_search_directory (ThunarJob  *job,
       search.model = model;
       search.job = job;
       search.directory = thunar_file_get_file (directory);
-      search.terms = search_query_c_terms;
-      success = thunar_rg_search (search.directory, show_hidden,
-                                 exo_job_get_cancellable (EXO_JOB (job)),
-                                 thunar_list_model_rg_file, &search, error);
+      search.terms = options == NULL ? search_query_c_terms : NULL;
+      if (options != NULL)
+        success = thunar_rg_search_full (search.directory, options,
+                                        exo_job_get_cancellable (EXO_JOB (job)),
+                                        thunar_list_model_rg_file, &search, error);
+      else
+        success = thunar_rg_search (search.directory, show_hidden,
+                                   exo_job_get_cancellable (EXO_JOB (job)),
+                                   thunar_list_model_rg_file, &search, error);
+    }
+  else if (options != NULL)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                           _("Advanced search requires a local folder"));
+      success = FALSE;
     }
   else
     {
@@ -2457,11 +2498,12 @@ thunar_list_model_job_search_directory (ThunarListModel *model,
                                         const gchar     *search_query_c,
                                         ThunarFile      *directory)
 {
-  return thunar_simple_job_new (_thunar_job_search_directory, 4,
+  return thunar_simple_job_new (_thunar_job_search_directory, 5,
                                 THUNAR_TYPE_LIST_MODEL, model,
                                 G_TYPE_STRING,          search_query_c,
                                 THUNAR_TYPE_FILE,       directory,
-                                G_TYPE_BOOLEAN,         model->show_hidden);
+                                G_TYPE_BOOLEAN,         model->show_hidden,
+                                THUNAR_TYPE_SEARCH_OPTIONS, model->advanced_search);
 }
 
 
@@ -2671,6 +2713,9 @@ thunar_list_model_set_folder (ThunarListModel *store,
   _thunar_return_if_fail (THUNAR_IS_LIST_MODEL (store));
   _thunar_return_if_fail (folder == NULL || THUNAR_IS_FOLDER (folder));
 
+  if (search_query == NULL)
+    thunar_list_model_set_advanced_search (store, NULL);
+
   /* unlink from the previously active folder (if any) */
   if (G_LIKELY (store->folder != NULL))
     {
@@ -2738,7 +2783,7 @@ thunar_list_model_set_folder (ThunarListModel *store,
       /* get the already loaded files or search for files matching the search_query
        * don't start searching if the query is empty, that would be a waste of resources
        */
-      if (search_query == NULL || strlen (g_strstrip (search_query)) == 0)
+      if (search_query == NULL || (store->advanced_search == NULL && strlen (g_strstrip (search_query)) == 0))
         {
           files = thunar_folder_get_files (folder);
 
@@ -2752,7 +2797,15 @@ thunar_list_model_set_folder (ThunarListModel *store,
         {
           gchar *search_query_c;  /* normalized */
 
-          search_query_c = thunar_g_utf8_normalize_for_search (search_query, TRUE, TRUE);
+          if (store->advanced_search != NULL)
+            {
+              search_query_c = g_strdup (search_query);
+              g_free (store->advanced_search->name);
+              store->advanced_search->name = g_strdup (search_query);
+              store->advanced_search->show_hidden = store->show_hidden;
+            }
+          else
+            search_query_c = thunar_g_utf8_normalize_for_search (search_query, TRUE, TRUE);
           g_strfreev (store->search_terms);
           store->search_terms = thunar_list_model_split_search_query (search_query_c, NULL);
           if (store->search_terms != NULL)

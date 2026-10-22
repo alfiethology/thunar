@@ -134,6 +134,149 @@ test_empty (Fixture *fixture,
 }
 
 static void
+run_filtered (Fixture                   *fixture,
+              const ThunarSearchOptions *options,
+              guint                      expected_count)
+{
+  GError *error = NULL;
+  g_hash_table_remove_all (fixture->paths);
+  g_assert_true (thunar_rg_search_full (fixture->directory, options, fixture->cancellable,
+                                       collect, fixture, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, expected_count);
+}
+
+static void
+test_name_and_content (Fixture *fixture,
+                       gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  write_file (fixture, "Report.TXT", "--Needle [a].");
+  write_file (fixture, "sub/report.txt", "--needle [a].");
+  write_file (fixture, "report.md", "--needle aX");
+  write_file (fixture, "report/not-a-match.txt", "--needle [a].");
+  write_file (fixture, ".hidden/report.txt", "--needle [a].");
+  write_file (fixture, "Straße.TXT", "");
+
+  g_free (options->name);
+  options->name = g_strdup ("report");
+  run_filtered (fixture, options, 3); /* A matching parent folder is not enough. */
+  options->recursive = FALSE;
+  run_filtered (fixture, options, 2);
+  options->recursive = TRUE;
+  options->show_hidden = TRUE;
+  run_filtered (fixture, options, 4);
+  options->show_hidden = FALSE;
+  options->case_sensitive = TRUE;
+  run_filtered (fixture, options, 2);
+  options->case_sensitive = FALSE;
+
+  g_free (options->name);
+  options->name = g_strdup ("report*.txt");
+  options->name_mode = THUNAR_SEARCH_NAME_WILDCARD;
+  run_filtered (fixture, options, 2);
+  g_free (options->name);
+  options->name = g_strdup ("^report\\.(txt|md)$");
+  options->name_mode = THUNAR_SEARCH_NAME_REGEX;
+  run_filtered (fixture, options, 3);
+  g_free (options->content);
+  options->content = g_strdup ("--needle [a].");
+  run_filtered (fixture, options, 2); /* Literal content, safely passed as an argument. */
+  options->case_sensitive = TRUE;
+  run_filtered (fixture, options, 1);
+  g_assert_true (g_hash_table_contains (fixture->paths, "sub/report.txt"));
+
+  options->case_sensitive = FALSE;
+  g_free (options->name);
+  options->name = g_strdup ("");
+  run_filtered (fixture, options, 3); /* Empty regex means any filename. */
+  g_free (options->content);
+  options->content = g_strdup ("");
+  g_free (options->name);
+  options->name = g_strdup ("STRASSE txt");
+  options->name_mode = THUNAR_SEARCH_NAME_CONTAINS;
+  run_filtered (fixture, options, 1);
+  g_assert_true (g_hash_table_contains (fixture->paths, "Straße.TXT"));
+  thunar_search_options_free (options);
+}
+
+static void
+set_modified (Fixture *fixture,
+              const gchar *name,
+              gint64 timestamp)
+{
+  GFile *file = g_file_get_child (fixture->directory, name);
+  GError *error = NULL;
+  g_assert_true (g_file_set_attribute_uint64 (file, G_FILE_ATTRIBUTE_TIME_MODIFIED,
+                                             timestamp, G_FILE_QUERY_INFO_NONE, NULL, &error));
+  g_assert_no_error (error);
+  g_object_unref (file);
+}
+
+static void
+test_size_and_dates (Fixture *fixture,
+                     gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  GError *error = NULL;
+  write_file (fixture, "small.txt", "123");
+  write_file (fixture, "medium.txt", "12345");
+  write_file (fixture, "large.txt", "123456789");
+  options->min_size = 4;
+  options->max_size = 8;
+  run_filtered (fixture, options, 1);
+  g_assert_true (g_hash_table_contains (fixture->paths, "medium.txt"));
+
+  g_assert_true (thunar_search_options_set_dates (options, "2024-02-29", "2024-02-29", &error));
+  g_assert_no_error (error);
+  set_modified (fixture, "small.txt", options->modified_after - 1);
+  set_modified (fixture, "medium.txt", options->modified_before - 1);
+  set_modified (fixture, "large.txt", options->modified_before);
+  run_filtered (fixture, options, 1); /* Size and date constraints are combined. */
+  options->min_size = 0;
+  options->max_size = G_MAXUINT64;
+  run_filtered (fixture, options, 1);
+  set_modified (fixture, "small.txt", options->modified_after);
+  run_filtered (fixture, options, 2); /* Both boundaries include the chosen day. */
+  thunar_search_options_free (options);
+}
+
+static void
+test_invalid_filters (void)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  GError *error = NULL;
+  options->min_size = 10;
+  options->max_size = 9;
+  g_assert_false (thunar_search_options_validate (options, &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+  g_clear_error (&error);
+  options->max_size = G_MAXUINT64;
+  g_free (options->name);
+  options->name = g_strdup ("(");
+  options->name_mode = THUNAR_SEARCH_NAME_REGEX;
+  g_assert_false (thunar_search_options_validate (options, &error));
+  g_assert_nonnull (error);
+  g_clear_error (&error);
+  g_assert_false (thunar_search_options_set_dates (options, "2023-02-29", "", &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+  g_clear_error (&error);
+  g_assert_false (thunar_search_options_set_dates (options, "2024-03-01", "2024-02-29", &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+  g_clear_error (&error);
+
+  /* Search jobs must own independent options even after the UI changes. */
+  GValue value = G_VALUE_INIT;
+  g_value_init (&value, THUNAR_TYPE_SEARCH_OPTIONS);
+  g_value_set_boxed (&value, options);
+  g_free (options->name);
+  options->name = g_strdup ("changed");
+  g_assert_cmpstr (((ThunarSearchOptions *) g_value_get_boxed (&value))->name, ==, "(");
+  g_value_unset (&value);
+  thunar_search_options_free (options);
+}
+
+static void
 test_pre_cancelled (Fixture *fixture,
                     gconstpointer unused)
 {
@@ -207,5 +350,8 @@ main (int argc, char **argv)
   g_test_add ("/rg/empty", Fixture, NULL, setup, test_empty, teardown);
   g_test_add ("/rg/pre-cancelled", Fixture, NULL, setup, test_pre_cancelled, teardown);
   g_test_add ("/rg/process-errors", Fixture, NULL, setup, test_process_errors, teardown);
+  g_test_add ("/rg/advanced/name-and-content", Fixture, NULL, setup, test_name_and_content, teardown);
+  g_test_add ("/rg/advanced/size-and-dates", Fixture, NULL, setup, test_size_and_dates, teardown);
+  g_test_add_func ("/rg/advanced/invalid-filters", test_invalid_filters);
   return g_test_run ();
 }

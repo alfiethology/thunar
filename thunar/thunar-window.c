@@ -35,6 +35,7 @@
 #include <libxfce4util/libxfce4util.h>
 
 #include <thunar/thunar-action-manager.h>
+#include <thunar/thunar-advanced-search-dialog.h>
 #include <thunar/thunar-application.h>
 #include <thunar/thunar-browser.h>
 #include <thunar/thunar-clipboard-manager.h>
@@ -242,6 +243,7 @@ static gboolean  thunar_window_action_contents            (ThunarWindow         
 static gboolean  thunar_window_action_about               (ThunarWindow           *window);
 static gboolean  thunar_window_action_show_hidden         (ThunarWindow           *window);
 static gboolean  thunar_window_action_show_highlight      (ThunarWindow           *window);
+static gboolean  thunar_window_action_advanced_search     (ThunarWindow           *window);
 static gboolean  thunar_window_propagate_key_event        (GtkWindow              *window,
                                                            GdkEvent               *key_event,
                                                            gpointer                user_data);
@@ -425,6 +427,7 @@ struct _ThunarWindow
 
   /* search */
   GtkWidget                 *catfish_search_button;
+  GtkWidget                 *advanced_search_button;
   gchar                     *search_query;
   gboolean                   is_searching;
   gboolean                   ignore_next_search_update;
@@ -552,6 +555,7 @@ static XfceGtkActionEntry thunar_window_action_entries[] =
     { THUNAR_WINDOW_ACTION_SWITCH_NEXT_TAB,                "<Actions>/ThunarWindow/switch-next-tab",                 "<Primary>Page_Down",   XFCE_GTK_IMAGE_MENU_ITEM, N_ ("_Next Tab"),              N_ ("Switch to Next Tab"),                                                           "go-next",                 G_CALLBACK (thunar_window_action_switch_next_tab),     },
     { THUNAR_WINDOW_ACTION_SEARCH,                         "<Actions>/ThunarWindow/search",                          "<Primary>f",           XFCE_GTK_IMAGE_MENU_ITEM, N_ ("_Search for Files..."),   N_ ("Search for a specific file in the current folder and Recent"),                  "system-search-symbolic",  G_CALLBACK (thunar_window_action_search),              },
     { THUNAR_WINDOW_ACTION_CANCEL_SEARCH,                  "<Actions>/ThunarWindow/cancel-search",                   "Escape",               XFCE_GTK_MENU_ITEM,       N_ ("Cancel search for files"),NULL,                                                                                "",                        G_CALLBACK (thunar_window_action_cancel_search),       },
+    { THUNAR_WINDOW_ACTION_ADVANCED_SEARCH,                "<Actions>/ThunarWindow/advanced-search",                 "<Primary><Shift>f",    XFCE_GTK_IMAGE_MENU_ITEM, N_ ("_Advanced Search..."),    N_ ("Search filenames and contents with size and date filters"),                    "system-search-symbolic",  G_CALLBACK (thunar_window_action_advanced_search),     },
     { 0,                                                   "<Actions>/ThunarWindow/open-file-menu",                  "F10",                  0,                        NULL,                          NULL,                                                                                NULL,                      G_CALLBACK (thunar_window_action_open_file_menu),      },
 };
 
@@ -759,6 +763,7 @@ thunar_window_init (ThunarWindow *window)
   GtkWidget             *infobar;
   GtkWidget             *item;
   GtkWidget             *event_box;
+  GtkWidget             *search_actions;
   gboolean               last_menubar_visible;
   gchar                 *last_location_bar;
   gchar                 *last_side_pane;
@@ -1028,13 +1033,21 @@ thunar_window_init (ThunarWindow *window)
   /* synchronise the "directory-specific-settings" property with the global "misc-directory-specific-settings" property */
   g_object_bind_property (G_OBJECT (window->preferences), "misc-directory-specific-settings", G_OBJECT (window), "directory-specific-settings", G_BINDING_SYNC_CREATE);
 
-  /* setup the `Show More...` button that appears at the bottom of the view after a search is completed */
+  search_actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_grid_attach (GTK_GRID (window->view_box), search_actions, 0, 1, 1, 1);
+  window->advanced_search_button = gtk_button_new_with_label (_("Advanced Search..."));
+  gtk_box_pack_start (GTK_BOX (search_actions), window->advanced_search_button, TRUE, TRUE, 0);
+  gtk_widget_set_no_show_all (window->advanced_search_button, TRUE);
+  g_signal_connect_swapped (window->advanced_search_button, "clicked", G_CALLBACK (thunar_window_action_advanced_search), window);
+  gtk_widget_show (search_actions);
+
+  /* Keep the optional external search tool alongside the built-in filters. */
   catfish_path =  g_find_program_in_path ("catfish");
   if (catfish_path != NULL)
     {
       /* TRANSLATORS: `Catfish' is a software package, please don't translate it. */
       window->catfish_search_button = gtk_button_new_with_label (_("Search with Catfish..."));
-      gtk_grid_attach (GTK_GRID (window->view_box), window->catfish_search_button, 0, 1, 1, 1);
+      gtk_box_pack_start (GTK_BOX (search_actions), window->catfish_search_button, TRUE, TRUE, 0);
       g_signal_connect_swapped (window->catfish_search_button, "clicked", G_CALLBACK (thunar_window_catfish_dialog_configure), window);
       gtk_widget_hide (window->catfish_search_button);
       g_free (catfish_path);
@@ -1511,6 +1524,7 @@ thunar_window_update_go_menu (ThunarWindow *window,
   xfce_gtk_menu_append_separator (GTK_MENU_SHELL (menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (THUNAR_WINDOW_ACTION_OPEN_LOCATION), G_OBJECT (window), GTK_MENU_SHELL (menu));
   xfce_gtk_menu_item_new_from_action_entry (get_action_entry (THUNAR_WINDOW_ACTION_SEARCH), G_OBJECT (window), GTK_MENU_SHELL (menu));
+  xfce_gtk_menu_item_new_from_action_entry (get_action_entry (THUNAR_WINDOW_ACTION_ADVANCED_SEARCH), G_OBJECT (window), GTK_MENU_SHELL (menu));
   gtk_widget_show_all (GTK_WIDGET (menu));
 
   thunar_window_redirect_menu_tooltips_to_statusbar (window, GTK_MENU (menu));
@@ -3212,6 +3226,7 @@ thunar_window_start_open_location (ThunarWindow *window,
 
       thunar_window_update_search (window);
       window->is_searching = TRUE;
+      gtk_widget_show (window->advanced_search_button);
       thunar_action_manager_set_searching (window->action_mgr, TRUE);
 
       /* the check is useless as long as the workaround is in place */
@@ -3256,6 +3271,7 @@ thunar_window_resume_search (ThunarWindow *window,
   thunar_location_bar_request_entry (THUNAR_LOCATION_BAR (window->location_bar), initial_text, FALSE);
 
   /* change to search UI and options */
+  gtk_widget_show (window->advanced_search_button);
   g_free (window->search_query);
   window->search_query = thunar_location_bar_get_search_query (THUNAR_LOCATION_BAR (window->location_bar));
   if (window->catfish_search_button != NULL)
@@ -3285,6 +3301,7 @@ thunar_window_update_search (ThunarWindow *window)
   g_free (window->search_query);
   window->search_query = thunar_location_bar_get_search_query (THUNAR_LOCATION_BAR (window->location_bar));
   thunar_standard_view_set_searching (THUNAR_STANDARD_VIEW (window->view), window->search_query);
+  gtk_widget_set_visible (window->advanced_search_button, window->search_query != NULL);
   if (window->search_query != NULL && g_strcmp0 (window->search_query, "") != 0 && window->catfish_search_button != NULL)
     gtk_widget_show (window->catfish_search_button);
   else if (window->catfish_search_button != NULL)
@@ -3334,6 +3351,7 @@ thunar_window_action_cancel_search (ThunarWindow *window)
   thunar_location_bar_cancel_search (THUNAR_LOCATION_BAR (window->location_bar));
   thunar_standard_view_set_searching (THUNAR_STANDARD_VIEW (window->view), NULL);
   thunar_action_manager_set_searching (window->action_mgr, FALSE);
+  gtk_widget_hide (window->advanced_search_button);
   if (window->catfish_search_button != NULL)
     gtk_widget_hide (window->catfish_search_button);
 
@@ -3595,6 +3613,13 @@ thunar_window_action_reload (ThunarWindow *window,
   gboolean result;
 
   _thunar_return_val_if_fail (THUNAR_IS_WINDOW (window), FALSE);
+
+  if (window->is_searching && window->view != NULL
+      && thunar_list_model_get_advanced_search (THUNAR_STANDARD_VIEW (window->view)->model) != NULL)
+    {
+      thunar_window_update_search (window);
+      return TRUE;
+    }
 
   /* force the view to reload */
   g_signal_emit (G_OBJECT (window), window_signals[RELOAD], 0, TRUE, &result);
@@ -4751,6 +4776,89 @@ thunar_window_action_show_highlight (ThunarWindow *window)
   /* refresh the view to refresh the cell renderer drawings */
   thunar_window_action_reload (window, NULL);
 
+  return TRUE;
+}
+
+
+
+static gboolean
+thunar_window_action_advanced_search (ThunarWindow *window)
+{
+  ThunarSearchOptions       *options;
+  const ThunarSearchOptions *current;
+  GtkWidget                 *dialog;
+  GFile                     *directory = NULL;
+  ThunarFile                *folder = NULL;
+  GError                    *error = NULL;
+  gchar                     *query;
+  GType                      original_view_type;
+
+  _thunar_return_val_if_fail (THUNAR_IS_WINDOW (window), FALSE);
+  if (window->current_directory == NULL || !THUNAR_IS_STANDARD_VIEW (window->view))
+    return TRUE;
+  if (!g_file_is_native (thunar_file_get_file (window->current_directory)))
+    {
+      thunar_dialogs_show_error (GTK_WIDGET (window), NULL, _("Advanced search requires a local folder"));
+      return TRUE;
+    }
+
+  current = thunar_list_model_get_advanced_search (THUNAR_STANDARD_VIEW (window->view)->model);
+  options = current != NULL ? thunar_search_options_copy (current) : thunar_search_options_new ();
+  options->show_hidden = window->show_hidden;
+  if (current == NULL && window->search_query != NULL)
+    {
+      g_free (options->name);
+      options->name = g_strdup (window->search_query);
+    }
+  dialog = thunar_advanced_search_dialog_new (GTK_WINDOW (window), thunar_file_get_file (window->current_directory), options);
+  thunar_search_options_free (options);
+  options = NULL;
+
+  while (gtk_dialog_run (GTK_DIALOG (dialog)) == GTK_RESPONSE_ACCEPT)
+    {
+      options = thunar_advanced_search_dialog_get_options (dialog, &error);
+      if (options != NULL)
+        {
+          directory = thunar_advanced_search_dialog_get_directory (dialog);
+          if (directory != NULL && g_file_is_native (directory))
+            folder = thunar_file_get (directory, &error);
+          else
+            g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, _("Select a local folder to search"));
+          if (folder != NULL)
+            break;
+        }
+      thunar_dialogs_show_error (dialog, error, _("Invalid search filters"));
+      g_clear_error (&error);
+      g_clear_object (&directory);
+      thunar_search_options_free (options);
+      options = NULL;
+    }
+  gtk_widget_destroy (dialog);
+  if (options == NULL)
+    return TRUE;
+
+  original_view_type = thunar_standard_view_get_saved_view_type (THUNAR_STANDARD_VIEW (window->view));
+  if (original_view_type == G_TYPE_NONE)
+    original_view_type = window->view_type;
+  thunar_window_action_cancel_search (window);
+  if (window->reset_view_type_idle_id != 0)
+    g_source_remove (window->reset_view_type_idle_id);
+  if (window->show_hidden != options->show_hidden)
+    thunar_window_action_show_hidden (window);
+  thunar_window_set_current_directory (window, folder);
+  thunar_window_start_open_location (window, SEARCH_PREFIX);
+  thunar_standard_view_save_view_type (THUNAR_STANDARD_VIEW (window->view), original_view_type);
+  thunar_list_model_set_advanced_search (THUNAR_STANDARD_VIEW (window->view)->model, options);
+  query = g_strconcat (SEARCH_PREFIX, options->name, NULL);
+  thunar_location_bar_request_entry (THUNAR_LOCATION_BAR (window->location_bar), query, FALSE);
+  thunar_window_update_search (window);
+  g_signal_handlers_block_by_func (window->location_toolbar_item_search, thunar_window_action_search, window);
+  gtk_toggle_tool_button_set_active (GTK_TOGGLE_TOOL_BUTTON (window->location_toolbar_item_search), TRUE);
+  g_signal_handlers_unblock_by_func (window->location_toolbar_item_search, thunar_window_action_search, window);
+  g_free (query);
+  g_object_unref (folder);
+  g_object_unref (directory);
+  thunar_search_options_free (options);
   return TRUE;
 }
 

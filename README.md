@@ -62,6 +62,21 @@ Thunar's hidden-file setting, including backup files ending in `~`. Directory
 symlinks are not followed. Remote and virtual folders retain Thunar's existing
 search implementation and recursive-search preference.
 
+Use **Go → Advanced Search…** or **Ctrl+Shift+F** for additional filters. The
+same dialog is available from the **Advanced Search…** button below search
+results. It supports filename words, wildcards (`*` and `?`), or regular
+expressions; optional literal text inside files; minimum and maximum sizes in
+KiB; inclusive modified-date ranges; case sensitivity; hidden files; and
+subfolder searches. Empty filters match any value, and maximum size 0 means
+unlimited. Filters are combined, and matching files appear in the normal view.
+
+Advanced search works in local folders. Content search reads files only when
+the content-text field is filled in; it uses ripgrep's normal text-search
+behavior and does not extract text from formats such as PDF or Word documents.
+Results are a snapshot: use Refresh to rerun the search. Each tab retains its
+own filters until the search is cancelled. The ordinary Ctrl+F filename search
+continues to avoid reading file contents.
+
 The ripgrep backend tests run with `make check`. They can also be built without
 the Xfce development libraries:
 

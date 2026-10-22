@@ -21,11 +21,16 @@ bin_SCRIPTS =								\
 bin_PROGRAMS =								\
 	thunar
 
-check_PROGRAMS = test-rg-search
+check_PROGRAMS = test-rg-search test-advanced-search-dialog
 TESTS = $(check_PROGRAMS)
+# Keep GUI tests independent of library/module overrides inherited from Snap apps.
+TESTS_ENVIRONMENT = env -u GTK_PATH -u GTK_MODULES -u GIO_EXTRA_MODULES -u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR -u LD_LIBRARY_PATH GTK_IM_MODULE=gtk-im-context-simple GIO_USE_VFS=local GSETTINGS_BACKEND=memory
 test_rg_search_SOURCES = ../tests/test-rg-search.c thunar-rg-search.c thunar-rg-search.h
 test_rg_search_CFLAGS = $(GIO_CFLAGS)
 test_rg_search_LDADD = $(GIO_LIBS)
+test_advanced_search_dialog_SOURCES = ../tests/test-advanced-search-dialog.c thunar-advanced-search-dialog.c thunar-advanced-search-dialog.h thunar-rg-search.c thunar-rg-search.h
+test_advanced_search_dialog_CFLAGS = $(GTK_CFLAGS) $(GIO_CFLAGS)
+test_advanced_search_dialog_LDADD = $(GTK_LIBS) $(GIO_LIBS)
 
 thunar_built_sources =							\
 	thunar-marshal.c							\
@@ -47,6 +52,8 @@ thunar_SOURCES =							\
 	$(thunar_built_sources)						\
 	$(thunar_dbus_sources)						\
 	main.c								\
+	thunar-advanced-search-dialog.c					\
+	thunar-advanced-search-dialog.h					\
 	thunar-abstract-dialog.c					\
 	thunar-abstract-dialog.h					\
 	thunar-abstract-icon-view.c					\

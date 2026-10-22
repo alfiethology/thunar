@@ -1130,7 +1130,11 @@ thunar_standard_view_get_property (GObject    *object,
       current_directory = thunar_navigator_get_current_directory (THUNAR_NAVIGATOR (object));
       if (THUNAR_STANDARD_VIEW (object)->priv->search_query != NULL)
         {
-          gchar *label = g_strjoin (NULL, "Search for '", THUNAR_STANDARD_VIEW (object)->priv->search_query, "' in ", thunar_file_get_display_name (current_directory), NULL);
+          gchar *label;
+          if (thunar_list_model_get_advanced_search (THUNAR_STANDARD_VIEW (object)->model) != NULL)
+            label = g_strdup_printf (_("Advanced search in %s"), thunar_file_get_display_name (current_directory));
+          else
+            label = g_strjoin (NULL, "Search for '", THUNAR_STANDARD_VIEW (object)->priv->search_query, "' in ", thunar_file_get_display_name (current_directory), NULL);
           g_value_take_string (value, label);
         }
       else
@@ -4548,7 +4552,8 @@ thunar_standard_view_set_searching (ThunarStandardView *standard_view,
   g_object_notify_by_pspec (G_OBJECT (standard_view), standard_view_props[PROP_DISPLAY_NAME]);
 
 
-  if (search_query != NULL && g_strcmp0 (search_query, "") != 0)
+  if (search_query != NULL && (g_strcmp0 (search_query, "") != 0
+      || thunar_list_model_get_advanced_search (standard_view->model) != NULL))
     standard_view->priv->active_search = TRUE;
   else
     standard_view->priv->active_search = FALSE;

@@ -22,11 +22,16 @@
 
 #include <thunar/thunar-folder.h>
 #include <thunar/thunar-job.h>
+#include <thunar/thunar-rg-search.h>
 
 G_BEGIN_DECLS;
 
 typedef struct _ThunarListModelClass ThunarListModelClass;
 typedef struct _ThunarListModel      ThunarListModel;
+
+void                       thunar_list_model_set_advanced_search (ThunarListModel           *store,
+                                                                 const ThunarSearchOptions *options);
+const ThunarSearchOptions *thunar_list_model_get_advanced_search (ThunarListModel           *store);
 
 typedef enum ThunarListModelSearch
 {

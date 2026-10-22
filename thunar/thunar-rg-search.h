@@ -8,6 +8,39 @@
 
 G_BEGIN_DECLS
 
+typedef enum
+{
+  THUNAR_SEARCH_NAME_CONTAINS,
+  THUNAR_SEARCH_NAME_WILDCARD,
+  THUNAR_SEARCH_NAME_REGEX
+} ThunarSearchNameMode;
+
+typedef struct
+{
+  gchar                *name;
+  gchar                *content;
+  ThunarSearchNameMode   name_mode;
+  gboolean              case_sensitive;
+  gboolean              recursive;
+  gboolean              show_hidden;
+  guint64               min_size;
+  guint64               max_size;
+  gint64                modified_after;
+  gint64                modified_before; /* exclusive */
+} ThunarSearchOptions;
+
+#define THUNAR_TYPE_SEARCH_OPTIONS (thunar_search_options_get_type ())
+GType                thunar_search_options_get_type  (void) G_GNUC_CONST;
+ThunarSearchOptions *thunar_search_options_new       (void);
+ThunarSearchOptions *thunar_search_options_copy      (const ThunarSearchOptions *options);
+void                 thunar_search_options_free      (ThunarSearchOptions       *options);
+gboolean             thunar_search_options_validate  (const ThunarSearchOptions *options,
+                                                      GError                   **error);
+gboolean             thunar_search_options_set_dates (ThunarSearchOptions       *options,
+                                                      const gchar               *after,
+                                                      const gchar               *before,
+                                                      GError                   **error);
+
 /* Paths are relative to the search directory, in filename encoding. */
 typedef void (*ThunarRgSearchFunc) (const gchar *path,
                                    gpointer     user_data);
@@ -18,6 +51,13 @@ gboolean thunar_rg_search (GFile              *directory,
                            ThunarRgSearchFunc  callback,
                            gpointer            user_data,
                            GError            **error);
+
+gboolean thunar_rg_search_full (GFile                     *directory,
+                                const ThunarSearchOptions *options,
+                                GCancellable              *cancellable,
+                                ThunarRgSearchFunc         callback,
+                                gpointer                   user_data,
+                                GError                   **error);
 
 G_END_DECLS
 

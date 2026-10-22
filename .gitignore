@@ -30,6 +30,9 @@ core
 thunar/test-rg-search
 thunar/test-rg-search.log
 thunar/test-rg-search.trs
+thunar/test-advanced-search-dialog
+thunar/test-advanced-search-dialog.log
+thunar/test-advanced-search-dialog.trs
 thunar/test-suite.log
 *.core
 *.desktop
