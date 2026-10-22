@@ -80,8 +80,6 @@ GList           *thunar_list_model_get_paths_for_pattern  (ThunarListModel  *sto
 gchar           *thunar_list_model_get_statusbar_text     (ThunarListModel  *store,
                                                            GList            *selected_items);
 ThunarJob       *thunar_list_model_get_job                (ThunarListModel  *store);
-void             thunar_list_model_set_job                (ThunarListModel  *store,
-                                                           ThunarJob        *job);
 
 G_END_DECLS;
 

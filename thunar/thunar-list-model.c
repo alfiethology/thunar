@@ -40,6 +40,7 @@
 #include <thunar/thunar-preferences.h>
 #include <thunar/thunar-private.h>
 #include <thunar/thunar-rg-search.h>
+#include <thunar/thunar-recent.h>
 #include <thunar/thunar-user.h>
 #include <thunar/thunar-simple-job.h>
 #include <thunar/thunar-util.h>
@@ -2278,15 +2279,6 @@ thunar_list_model_get_advanced_search (ThunarListModel *store)
 
 
 
-void
-thunar_list_model_set_job (ThunarListModel  *store,
-                           ThunarJob        *job)
-{
-  store->recursive_search_job = job;
-}
-
-
-
 static gboolean
 thunar_list_model_add_search_files (gpointer user_data)
 {
@@ -2574,6 +2566,8 @@ thunar_list_model_search_folder (ThunarListModel           *model,
   GFileEnumerator *enumerator;
   GFile           *directory;
   GList           *files_found = NULL; /* contains the matching files in this folder only */
+  GList           *recent_entries = NULL;
+  gboolean         is_recent;
   const gchar     *namespace;
   const gchar     *display_name;
   gchar           *display_name_c; /* converted to ignore case */
@@ -2601,6 +2595,10 @@ thunar_list_model_search_folder (ThunarListModel           *model,
       return;
     }
 
+  is_recent = thunar_g_file_is_recent (directory);
+  if (is_recent)
+    recent_entries = thunar_recent_collect_infos (enumerator, THUNAR_RECENT_FILES_LIMIT, cancellable, NULL);
+
   /* go through every file in the folder and check if it matches */
   while (exo_job_is_cancelled (EXO_JOB (job)) == FALSE)
     {
@@ -2609,17 +2607,34 @@ thunar_list_model_search_folder (ThunarListModel           *model,
       GFileType  type;
 
       /* get GFile and GFileInfo */
-      info = g_file_enumerator_next_file (enumerator, cancellable, NULL);
+      if (is_recent)
+        {
+          if (recent_entries == NULL)
+            break;
+          info = recent_entries->data;
+          recent_entries = g_list_delete_link (recent_entries, recent_entries);
+        }
+      else
+        info = g_file_enumerator_next_file (enumerator, cancellable, NULL);
       if (G_UNLIKELY (info == NULL))
         break;
 
       if (g_file_has_uri_scheme (directory, "recent"))
         {
-          file = g_file_new_for_uri (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_TARGET_URI));
+          const gchar *target_uri = g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_TARGET_URI);
+          if (target_uri == NULL)
+            {
+              g_object_unref (info);
+              continue;
+            }
+          file = g_file_new_for_uri (target_uri);
           g_object_unref (info);
           info = g_file_query_info (file, namespace, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, cancellable, NULL);
           if (G_UNLIKELY (info == NULL))
-            break;
+            {
+              g_object_unref (file);
+              continue;
+            }
         }
       else
         file = g_file_get_child (directory, g_file_info_get_name (info));
@@ -2640,7 +2655,7 @@ thunar_list_model_search_folder (ThunarListModel           *model,
       type = g_file_info_get_file_type (info);
 
       /* handle directories */
-      if (type == G_FILE_TYPE_DIRECTORY && search_type == THUNAR_LIST_MODEL_SEARCH_RECURSIVE)
+      if (!is_recent && type == G_FILE_TYPE_DIRECTORY && search_type == THUNAR_LIST_MODEL_SEARCH_RECURSIVE)
         {
           thunar_list_model_search_folder (model, job, g_file_get_uri (file), search_query_c_terms, search_type, show_hidden);
         }
@@ -2665,6 +2680,7 @@ thunar_list_model_search_folder (ThunarListModel           *model,
 
   g_object_unref (enumerator);
   g_object_unref (directory);
+  g_list_free_full (recent_entries, g_object_unref);
 
   g_mutex_lock (&model->mutex_files_to_add);
   if (!exo_job_is_cancelled (EXO_JOB (job)))

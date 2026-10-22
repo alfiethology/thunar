@@ -991,6 +991,17 @@ thunar_standard_view_dispose (GObject *object)
 {
   ThunarStandardView *standard_view = THUNAR_STANDARD_VIEW (object);
 
+  /* Workers hold the model alive. Disconnect the view and cancel its search
+   * now, rather than letting callbacks outlive the widgets during replacement. */
+  if (standard_view->model != NULL)
+    {
+      GtkWidget *child = gtk_bin_get_child (GTK_BIN (standard_view));
+      g_signal_handlers_disconnect_by_data (standard_view->model, standard_view);
+      if (child != NULL)
+        g_object_set (child, "model", NULL, NULL);
+      thunar_list_model_set_folder (standard_view->model, NULL, NULL);
+    }
+
   /* cancel pending thumbnail sources and requests */
   thunar_standard_view_cancel_thumbnailing (standard_view);
 
@@ -1060,6 +1071,7 @@ thunar_standard_view_finalize (GObject *object)
   thunar_g_list_free_full (standard_view->priv->drop_file_list);
 
   /* release the history */
+  g_clear_pointer (&standard_view->priv->search_query, g_free);
   g_object_unref (standard_view->priv->history);
 
   /* release the reference on the name renderer */
@@ -1543,6 +1555,7 @@ thunar_standard_view_set_current_directory (ThunarNavigator *navigator,
 {
   ThunarStandardView *standard_view = THUNAR_STANDARD_VIEW (navigator);
   ThunarFolder       *folder;
+  gboolean            was_recent;
 
   _thunar_return_if_fail (THUNAR_IS_STANDARD_VIEW (standard_view));
   _thunar_return_if_fail (current_directory == NULL || THUNAR_IS_FILE (current_directory));
@@ -1550,6 +1563,12 @@ thunar_standard_view_set_current_directory (ThunarNavigator *navigator,
   /* get the current directory */
   if (standard_view->priv->current_directory == current_directory)
     return;
+
+  was_recent = standard_view->priv->current_directory != NULL
+               && thunar_file_is_recent (standard_view->priv->current_directory);
+
+  g_clear_pointer (&standard_view->priv->search_query, g_free);
+  standard_view->priv->active_search = FALSE;
 
   /* cancel any pending thumbnail sources and requests */
   thunar_standard_view_cancel_thumbnailing (standard_view);
@@ -1633,6 +1652,23 @@ thunar_standard_view_set_current_directory (ThunarNavigator *navigator,
   thunar_list_model_set_folder (standard_view->model, folder, NULL);
   g_signal_handler_unblock (standard_view->model, standard_view->priv->row_deleted_id);
   g_object_unref (G_OBJECT (folder));
+
+  /* Recent opens newest first without replacing the saved sort for normal
+   * folders. Restore that sort when leaving Recent. */
+  if (thunar_file_is_recent (current_directory)
+      || (was_recent && !standard_view->priv->directory_specific_settings))
+    {
+      gint column = THUNAR_COLUMN_RECENCY;
+      GtkSortType order = GTK_SORT_DESCENDING;
+      if (!thunar_file_is_recent (current_directory))
+        g_object_get (standard_view->preferences, "last-sort-column", &column, "last-sort-order", &order, NULL);
+      g_signal_handlers_block_by_func (standard_view->model, thunar_standard_view_sort_column_changed, standard_view);
+      gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (standard_view->model), column, order);
+      thunar_standard_view_store_sort_column (standard_view);
+      g_signal_handlers_unblock_by_func (standard_view->model, thunar_standard_view_sort_column_changed, standard_view);
+      g_object_notify_by_pspec (G_OBJECT (standard_view), standard_view_props[PROP_SORT_COLUMN]);
+      g_object_notify_by_pspec (G_OBJECT (standard_view), standard_view_props[PROP_SORT_ORDER]);
+    }
 
   /* reconnect our model to the view */
   g_object_set (G_OBJECT (gtk_bin_get_child (GTK_BIN (standard_view))), "model", standard_view->model, NULL);
@@ -4527,6 +4563,7 @@ void
 thunar_standard_view_set_searching (ThunarStandardView *standard_view,
                                     gchar              *search_query)
 {
+  ThunarFolder *folder;
   /* can be called from a change in the path entry when the tab switches and a new directory is set
    * which in turn sets a new location (see thunar_window_notebook_switch_page) */
   if (standard_view == NULL)
@@ -4543,9 +4580,11 @@ thunar_standard_view_set_searching (ThunarStandardView *standard_view,
   /* set_folder() can emit a large number of row-deleted signals for large folders,
    * to the extent it degrades performance: https://gitlab.xfce.org/xfce/thunar/-/issues/914 */
   g_signal_handler_block (standard_view->model, standard_view->priv->row_deleted_id);
-  g_object_ref (G_OBJECT (thunar_list_model_get_folder (standard_view->model))); /* temporarily hold a reference so the folder doesn't get deleted */
-  thunar_list_model_set_folder (standard_view->model, thunar_list_model_get_folder (standard_view->model), search_query);
-  g_object_unref (G_OBJECT (thunar_list_model_get_folder (standard_view->model))); /* reference no longer needed */
+  folder = thunar_list_model_get_folder (standard_view->model);
+  if (folder != NULL)
+    g_object_ref (folder);
+  thunar_list_model_set_folder (standard_view->model, folder, search_query);
+  g_clear_object (&folder);
   g_signal_handler_unblock (standard_view->model, standard_view->priv->row_deleted_id);
 
   /* change the display name in the tab */

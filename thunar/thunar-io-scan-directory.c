@@ -30,6 +30,7 @@
 #include <thunar/thunar-job.h>
 #include <thunar/thunar-private.h>
 #include <thunar/thunar-io-scan-directory.h>
+#include <thunar/thunar-recent.h>
 
 
 /**
@@ -69,6 +70,8 @@ thunar_io_scan_directory (ThunarJob          *job,
   ThunarFile      *thunar_file;
   gboolean         is_mounted;
   GCancellable    *cancellable = NULL;
+  GList           *recent_entries = NULL;
+  gboolean         limit_recent;
 
   _thunar_return_val_if_fail (G_IS_FILE (file), NULL);
   _thunar_return_val_if_fail (error == NULL || *error == NULL, NULL);
@@ -121,11 +124,34 @@ thunar_io_scan_directory (ThunarJob          *job,
       return NULL;
     }
 
+  limit_recent = return_thunar_files && !recursively && !unlinking
+                 && thunar_g_file_is_recent (file);
+  if (limit_recent)
+    {
+      recent_entries = thunar_recent_collect_infos (enumerator,
+                        n_files_max != NULL ? MIN (*n_files_max, THUNAR_RECENT_FILES_LIMIT) : THUNAR_RECENT_FILES_LIMIT,
+                        cancellable, &err);
+      if (err != NULL)
+        {
+          g_object_unref (enumerator);
+          g_propagate_error (error, err);
+          return NULL;
+        }
+    }
+
   /* iterate over children one by one */
   while (job == NULL || !exo_job_is_cancelled (EXO_JOB (job)))
     {
       /* query info of the child */
-      info = g_file_enumerator_next_file (enumerator, cancellable, &err);
+      if (limit_recent)
+        {
+          if (recent_entries == NULL)
+            break;
+          info = recent_entries->data;
+          recent_entries = g_list_delete_link (recent_entries, recent_entries);
+        }
+      else
+        info = g_file_enumerator_next_file (enumerator, cancellable, &err);
 
       /* break when end of enumerator is reached */
       if (G_UNLIKELY (info == NULL && err == NULL))
@@ -134,7 +160,10 @@ thunar_io_scan_directory (ThunarJob          *job,
       if (G_UNLIKELY (n_files_max != NULL))
         {
           if (*n_files_max == 0)
-            break;
+            {
+              g_clear_object (&info);
+              break;
+            }
           else
             (*n_files_max)--;
         }
@@ -172,8 +201,14 @@ thunar_io_scan_directory (ThunarJob          *job,
       /* check if we are scanning `recent:///` */
       if (g_file_has_uri_scheme (file, "recent"))
         {
+          const gchar *target_uri = g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_TARGET_URI);
+          if (target_uri == NULL)
+            {
+              g_object_unref (info);
+              continue;
+            }
           /* create Gfile using the target URI */
-          child_file = g_file_new_for_uri (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_TARGET_URI));
+          child_file = g_file_new_for_uri (target_uri);
 
           /* create new file info using Gfile*/
           recent_info = info;
@@ -182,6 +217,12 @@ thunar_io_scan_directory (ThunarJob          *job,
           if (G_UNLIKELY (info == NULL))
             {
               g_object_unref (recent_info);
+              g_object_unref (child_file);
+              if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND))
+                {
+                  g_clear_error (&err);
+                  continue;
+                }
               break;
             }
         }
@@ -220,10 +261,12 @@ thunar_io_scan_directory (ThunarJob          *job,
 
       g_object_unref (child_file);
       g_object_unref (info);
+      g_clear_object (&recent_info);
     }
 
   /* release the enumerator */
   g_object_unref (enumerator);
+  g_list_free_full (recent_entries, g_object_unref);
 
   if (G_UNLIKELY (err != NULL))
     {

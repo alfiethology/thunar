@@ -77,6 +77,10 @@ Results are a snapshot: use Refresh to rerun the search. Each tab retains its
 own filters until the search is cancelled. The ordinary Ctrl+F filename search
 continues to avoid reading file contents.
 
+Recent shows at most the 200 most recently used entries, newest first. The
+limit is applied before loading target-file metadata, and searches within
+Recent use that same set of 200 entries. Ordinary folders remain unlimited.
+
 The ripgrep backend tests run with `make check`. They can also be built without
 the Xfce development libraries:
 

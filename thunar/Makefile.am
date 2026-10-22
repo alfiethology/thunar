@@ -21,16 +21,22 @@ bin_SCRIPTS =								\
 bin_PROGRAMS =								\
 	thunar
 
-check_PROGRAMS = test-rg-search test-advanced-search-dialog
-TESTS = $(check_PROGRAMS)
+check_PROGRAMS = test-rg-search test-advanced-search-dialog test-recent test-search-navigation
+TESTS = test-rg-search test-advanced-search-dialog test-recent ../tests/test-search-navigation.sh
 # Keep GUI tests independent of library/module overrides inherited from Snap apps.
-TESTS_ENVIRONMENT = env -u GTK_PATH -u GTK_MODULES -u GIO_EXTRA_MODULES -u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR -u LD_LIBRARY_PATH GTK_IM_MODULE=gtk-im-context-simple GIO_USE_VFS=local GSETTINGS_BACKEND=memory
+TESTS_ENVIRONMENT = env -u GTK_PATH -u GTK_MODULES -u GIO_EXTRA_MODULES -u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR -u LD_LIBRARY_PATH GTK_IM_MODULE=gtk-im-context-simple GIO_USE_VFS=local GSETTINGS_BACKEND=memory THUNAR_TEST_BUILD_DIR="$(abs_builddir)"
 test_rg_search_SOURCES = ../tests/test-rg-search.c thunar-rg-search.c thunar-rg-search.h
 test_rg_search_CFLAGS = $(GIO_CFLAGS)
 test_rg_search_LDADD = $(GIO_LIBS)
 test_advanced_search_dialog_SOURCES = ../tests/test-advanced-search-dialog.c thunar-advanced-search-dialog.c thunar-advanced-search-dialog.h thunar-rg-search.c thunar-rg-search.h
 test_advanced_search_dialog_CFLAGS = $(GTK_CFLAGS) $(GIO_CFLAGS)
 test_advanced_search_dialog_LDADD = $(GTK_LIBS) $(GIO_LIBS)
+test_recent_SOURCES = ../tests/test-recent.c thunar-recent.c thunar-recent.h
+test_recent_CFLAGS = $(GIO_CFLAGS)
+test_recent_LDADD = $(GIO_LIBS)
+test_search_navigation_SOURCES = ../tests/test-search-navigation.c
+test_search_navigation_CFLAGS = $(thunar_CFLAGS)
+test_search_navigation_LDADD = libthunar.a $(thunar_LDADD) $(GMODULE_LIBS)
 
 thunar_built_sources =							\
 	thunar-marshal.c							\
@@ -142,6 +148,8 @@ thunar_SOURCES =							\
 	thunar-list-model.h						\
 	thunar-rg-search.c						\
 	thunar-rg-search.h						\
+	thunar-recent.c							\
+	thunar-recent.h							\
 	thunar-location-bar.c						\
 	thunar-location-bar.h						\
 	thunar-location-button.c					\

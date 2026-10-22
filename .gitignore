@@ -33,6 +33,12 @@ thunar/test-rg-search.trs
 thunar/test-advanced-search-dialog
 thunar/test-advanced-search-dialog.log
 thunar/test-advanced-search-dialog.trs
+thunar/test-recent
+thunar/test-recent.log
+thunar/test-recent.trs
+thunar/test-search-navigation
+tests/test-search-navigation.sh.log
+tests/test-search-navigation.sh.trs
 thunar/test-suite.log
 *.core
 *.desktop

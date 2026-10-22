@@ -2,6 +2,7 @@ thunar/main.c
 thunar/thunar-abstract-dialog.c
 thunar/thunar-abstract-icon-view.c
 thunar/thunar-action-manager.c
+thunar/thunar-advanced-search-dialog.c
 thunar/thunar-application.c
 thunar/thunar-browser.c
 thunar/thunar-chooser-button.c

@@ -4015,7 +4015,6 @@ thunar_window_replace_view (ThunarWindow *window,
   ThunarFile     *current_directory = NULL;
   GtkWidget      *new_view;
   ThunarHistory  *history = NULL;
-  ThunarJob      *job = NULL;
   GList          *selected_thunar_files = NULL;
   gint            page_num;
   gboolean        is_current_view;
@@ -4059,8 +4058,6 @@ thunar_window_replace_view (ThunarWindow *window,
         {
           history = thunar_standard_view_copy_history (THUNAR_STANDARD_VIEW (view));
 
-          /* Transfer ownership of the search-job to the new view. It is the new view's responsibility to cancel the search. */
-          job = thunar_list_model_get_job (THUNAR_STANDARD_VIEW (view)->model);
         }
     }
 
@@ -4125,7 +4122,6 @@ thunar_window_replace_view (ThunarWindow *window,
                                                                             window);
     }
 
-  thunar_list_model_set_job (THUNAR_STANDARD_VIEW (new_view)->model, job);
 }
 
 
@@ -5281,6 +5277,24 @@ thunar_window_set_current_directory (ThunarWindow *window,
   if (G_UNLIKELY (window->current_directory == current_directory))
     return;
 
+  /* Keep the destination alive if cancelling clears the selection that
+   * supplied it. This reference becomes the window's new directory reference. */
+  if (current_directory != NULL)
+    g_object_ref (current_directory);
+
+  /* A search job and its result queue belong to the current view's model.
+   * Stop them before navigation can replace that view or update the location
+   * entry. Tab switches unset window->view first and keep their own searches. */
+  if (current_directory != NULL && window->view != NULL && window->is_searching)
+    {
+      thunar_window_action_cancel_search (window);
+      if (window->reset_view_type_idle_id != 0)
+        {
+          g_source_remove (window->reset_view_type_idle_id);
+          thunar_window_reset_view_type_idle (window);
+        }
+    }
+
   /* disconnect from the previously active directory */
   if (G_LIKELY (window->current_directory != NULL))
     {
@@ -5295,9 +5309,6 @@ thunar_window_set_current_directory (ThunarWindow *window,
       GType  type;
       gchar *type_name;
       gint   num_pages;
-
-      /* take a reference on the file */
-      g_object_ref (G_OBJECT (current_directory));
 
       num_pages = gtk_notebook_get_n_pages (GTK_NOTEBOOK (window->notebook_selected));
 
