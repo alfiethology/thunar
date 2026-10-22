@@ -14,6 +14,8 @@ import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--dry-run', action='store_true', help='validate menu changes without writing launchers')
+parser.add_argument('--set-default', action='store_true',
+                    help='make this build the preferred folder manager and start it at graphical login')
 args = parser.parse_args()
 project = Path(__file__).resolve().parent.parent
 home = Path.home()
@@ -54,6 +56,10 @@ for filename in ('thunar.desktop', 'thunar-bulk-rename.desktop'):
     source = target if target.exists() else Path('/usr/share/applications') / filename
     content = re.sub(r'^Exec=(?:/usr/bin/)?(?:thunar|Thunar)(?=\s|$)',
                      f'Exec={launcher}', source.read_text(), flags=re.MULTILINE)
+    if filename == 'thunar.desktop':
+        # Keep the GNOME Files appearance when refreshing the local launchers.
+        content = re.sub(r'^Icon=.*$', 'Icon=org.gnome.Nautilus', content,
+                         count=1, flags=re.MULTILINE)
     # Preserve custom actions, repairing case mismatches in their identifiers.
     groups = re.findall(r'^\[Desktop Action (.+)\]$', content, re.MULTILINE)
     def repair_actions(match):
@@ -102,6 +108,38 @@ for filename, name in services.items():
 
 install(home / '.config/systemd/user/thunar.service.d/local-checkout.conf',
         f'[Service]\nExecStart=\nExecStart={launcher} --daemon\n')
+
+if args.set_default:
+    # Exo's preferred application is independent of the desktop MIME defaults.
+    install(home / '.local/share/xfce4/helpers/thunar-local.desktop',
+            '[Desktop Entry]\nVersion=1.0\nType=X-XFCE-Helper\n'
+            'Name=Thunar (local checkout)\nIcon=org.gnome.Nautilus\nStartupNotify=true\n'
+            'X-XFCE-Category=FileManager\n'
+            f'X-XFCE-Binaries={launcher};\nX-XFCE-Commands=%B;\n'
+            'X-XFCE-CommandsWithParameter=%B "%s";\n')
+    helpers = home / '.config/xfce4/helpers.rc'
+    content = helpers.read_text() if helpers.exists() else ''
+    if re.search(r'^FileManager=', content, re.MULTILINE):
+        content = re.sub(r'^FileManager=.*$', 'FileManager=thunar-local', content,
+                         flags=re.MULTILINE)
+    else:
+        content = content.rstrip('\n') + '\nFileManager=thunar-local\n'
+    install(helpers, content)
+
+    # Save the original associations before GIO updates just the folder types.
+    # Ordinary documents, web links and file:// URLs retain their usual handlers.
+    mimeapps = home / '.config/mimeapps.list'
+    install(mimeapps, mimeapps.read_text() if mimeapps.exists() else '')
+    for mime in ('inode/directory', 'application/x-directory'):
+        subprocess.run(['gio', 'mime', mime, 'thunar.desktop'], check=True)
+
+    # Claim FileManager1 early at login, including requests from other apps to
+    # reveal a file. Use the existing service so every entry point shares it.
+    install(home / '.config/autostart/thunar-local.desktop',
+            '[Desktop Entry]\nType=Application\nName=Thunar file manager service\n'
+            'Exec=systemctl --user start thunar.service\n'
+            'NoDisplay=true\nX-GNOME-Autostart-enabled=true\n')
+
 subprocess.run(['update-desktop-database', str(applications)], check=True)
 subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
 
@@ -112,3 +150,6 @@ subprocess.run(['dbus-send', '--session', '--type=method_call', '--print-reply',
 print(f'Previous personal launcher settings saved to {backup}')
 print('Personal menu, command and D-Bus launchers now target this checkout.')
 print('Existing Thunar windows keep their current process until Thunar is restarted.')
+if args.set_default:
+    subprocess.run(['systemctl', '--user', 'start', 'thunar.service'], check=True)
+    print('Folder defaults, preferred file manager and login startup now use this checkout.')
