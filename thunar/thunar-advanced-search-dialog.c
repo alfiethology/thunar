@@ -12,7 +12,7 @@ typedef struct
   GtkWidget *directory;
   GtkWidget *name;
   GtkWidget *name_mode;
-  GtkWidget *content;
+  GtkWidget *rules;
   GtkWidget *min_size;
   GtkWidget *max_size;
   GtkWidget *after;
@@ -20,7 +20,55 @@ typedef struct
   GtkWidget *match_case;
   GtkWidget *recursive;
   GtkWidget *hidden;
+  GtkWidget *exclude_directories;
 } SearchFields;
+
+typedef struct
+{
+  GtkWidget *action;
+  GtkWidget *target;
+  GtkWidget *text;
+} RuleFields;
+
+static GtkWidget *
+add_rule (SearchFields *fields, const gchar *text, gboolean exclude, gboolean in_contents)
+{
+  RuleFields *rule = g_new0 (RuleFields, 1);
+  GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  GtkWidget *remove = gtk_button_new_from_icon_name ("list-remove-symbolic", GTK_ICON_SIZE_BUTTON);
+  g_object_set_data_full (G_OBJECT (row), "search-rule", rule, g_free);
+  rule->action = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (rule->action), _("Include"));
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (rule->action), _("Exclude"));
+  gtk_combo_box_set_active (GTK_COMBO_BOX (rule->action), exclude ? 1 : 0);
+  rule->target = gtk_combo_box_text_new ();
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (rule->target), _("Filename"));
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (rule->target), _("File contents"));
+  gtk_combo_box_set_active (GTK_COMBO_BOX (rule->target), in_contents ? 1 : 0);
+  rule->text = gtk_entry_new ();
+  gtk_entry_set_text (GTK_ENTRY (rule->text), text);
+  gtk_entry_set_placeholder_text (GTK_ENTRY (rule->text), _("Text to match (literal)"));
+  gtk_entry_set_activates_default (GTK_ENTRY (rule->text), TRUE);
+  gtk_widget_set_name (rule->action, "search-rule-action");
+  gtk_widget_set_name (rule->target, "search-rule-target");
+  gtk_widget_set_name (rule->text, "search-rule-text");
+  gtk_widget_set_name (remove, "remove-search-rule");
+  gtk_widget_set_tooltip_text (remove, _("Remove this rule"));
+  g_signal_connect_swapped (remove, "clicked", G_CALLBACK (gtk_widget_destroy), row);
+  gtk_box_pack_start (GTK_BOX (row), rule->action, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (row), rule->target, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (row), rule->text, TRUE, TRUE, 0);
+  gtk_box_pack_start (GTK_BOX (row), remove, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (fields->rules), row, FALSE, FALSE, 0);
+  gtk_widget_show_all (row);
+  return rule->text;
+}
+
+static void
+add_rule_clicked (GtkButton *button, SearchFields *fields)
+{
+  gtk_widget_grab_focus (add_rule (fields, "", FALSE, FALSE));
+}
 
 static void
 add_field (GtkWidget   *grid,
@@ -75,7 +123,7 @@ thunar_advanced_search_dialog_new (GtkWindow                 *parent,
                                         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
                                         _("_Cancel"), GTK_RESPONSE_CANCEL,
                                         _("_Search"), GTK_RESPONSE_ACCEPT, NULL);
-  gtk_window_set_default_size (GTK_WINDOW (dialog), 580, -1);
+  gtk_window_set_default_size (GTK_WINDOW (dialog), 700, -1);
   gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_ACCEPT);
   g_object_set_data_full (G_OBJECT (dialog), "search-fields", fields, g_free);
   grid = gtk_grid_new ();
@@ -90,7 +138,7 @@ thunar_advanced_search_dialog_new (GtkWindow                 *parent,
   add_field (grid, _("Search _in:"), fields->directory, 0);
 
   fields->name = new_entry (options->name, _("Leave empty for any filename"));
-  add_field (grid, _("_Filename:"), fields->name, 1);
+  add_field (grid, _("_Filename filter:"), fields->name, 1);
   fields->name_mode = gtk_combo_box_text_new ();
   gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (fields->name_mode), _("Contains all words"));
   gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (fields->name_mode), _("Wildcards (* and ?)"));
@@ -98,8 +146,30 @@ thunar_advanced_search_dialog_new (GtkWindow                 *parent,
   gtk_combo_box_set_active (GTK_COMBO_BOX (fields->name_mode), options->name_mode);
   add_field (grid, _("Filename _matching:"), fields->name_mode, 2);
 
-  fields->content = new_entry (options->content, _("Optional text inside files"));
-  add_field (grid, _("Containing _text:"), fields->content, 3);
+  GtkWidget *rule_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+  GtkWidget *add = gtk_button_new_with_mnemonic (_("_Add rule"));
+  gtk_widget_set_name (add, "add-search-rule");
+  gtk_widget_set_halign (add, GTK_ALIGN_START);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_min_content_height (GTK_SCROLLED_WINDOW (scroll), 100);
+  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (scroll), 190);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (scroll), TRUE);
+  fields->rules = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_container_add (GTK_CONTAINER (scroll), fields->rules);
+  gtk_box_pack_start (GTK_BOX (rule_box), scroll, TRUE, TRUE, 0);
+  gtk_box_pack_start (GTK_BOX (rule_box), add, FALSE, FALSE, 0);
+  g_signal_connect (add, "clicked", G_CALLBACK (add_rule_clicked), fields);
+  add_field (grid, _("Text _rules:"), rule_box, 3);
+  if (*options->content != '\0')
+    add_rule (fields, options->content, FALSE, TRUE);
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      add_rule (fields, rule->text, rule->exclude, rule->in_contents);
+    }
+  if (options->rules->len == 0 && *options->content == '\0')
+    add_rule (fields, "", FALSE, FALSE);
   fields->min_size = gtk_spin_button_new_with_range (0, 1000000000000.0, 1);
   gtk_spin_button_set_value (GTK_SPIN_BUTTON (fields->min_size), options->min_size / 1024.0);
   add_field (grid, _("Minimum si_ze (KiB):"), fields->min_size, 4);
@@ -125,13 +195,20 @@ thunar_advanced_search_dialog_new (GtkWindow                 *parent,
   fields->hidden = gtk_check_button_new_with_mnemonic (_("Include _hidden and backup files"));
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (fields->hidden), options->show_hidden);
   gtk_grid_attach (GTK_GRID (grid), fields->hidden, 0, 10, 2, 1);
+  fields->exclude_directories = gtk_check_button_new_with_mnemonic (_("Exclude _directories"));
+  gtk_widget_set_name (fields->exclude_directories, "exclude-directories");
+  gtk_widget_set_tooltip_text (fields->exclude_directories, _("Hide directories from results; files inside them are still searched"));
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (fields->exclude_directories), options->exclude_directories);
+  gtk_grid_attach (GTK_GRID (grid), fields->exclude_directories, 0, 11, 2, 1);
 
-  help = gtk_label_new (_("Empty filters match any value. Maximum size 0 means unlimited.\n"
-                         "Content text is literal. Both dates include the whole day."));
+  help = gtk_label_new (_("All include rules must match. Excluded text must not occur.\n"
+                         "Rules match literal text; empty rules are ignored. Filename is the default.\n"
+                         "Content rules return files only. Maximum size 0 means unlimited.\n"
+                         "Both dates include the whole day."));
   gtk_label_set_xalign (GTK_LABEL (help), 0.0);
   gtk_label_set_line_wrap (GTK_LABEL (help), TRUE);
   gtk_style_context_add_class (gtk_widget_get_style_context (help), "dim-label");
-  gtk_grid_attach (GTK_GRID (grid), help, 0, 11, 2, 1);
+  gtk_grid_attach (GTK_GRID (grid), help, 0, 12, 2, 1);
   gtk_widget_show_all (grid);
   gtk_widget_grab_focus (fields->name);
   return dialog;
@@ -144,13 +221,23 @@ thunar_advanced_search_dialog_get_options (GtkWidget *dialog,
   SearchFields *fields = g_object_get_data (G_OBJECT (dialog), "search-fields");
   ThunarSearchOptions *options = thunar_search_options_new ();
   g_free (options->name);
-  g_free (options->content);
   options->name = g_strdup (gtk_entry_get_text (GTK_ENTRY (fields->name)));
-  options->content = g_strdup (gtk_entry_get_text (GTK_ENTRY (fields->content)));
+  GList *rows = gtk_container_get_children (GTK_CONTAINER (fields->rules));
+  for (GList *lp = rows; lp != NULL; lp = lp->next)
+    {
+      RuleFields *rule = g_object_get_data (G_OBJECT (lp->data), "search-rule");
+      const gchar *text = gtk_entry_get_text (GTK_ENTRY (rule->text));
+      if (*text != '\0')
+        thunar_search_options_add_rule (options, text,
+                                        gtk_combo_box_get_active (GTK_COMBO_BOX (rule->action)) == 1,
+                                        gtk_combo_box_get_active (GTK_COMBO_BOX (rule->target)) == 1);
+    }
+  g_list_free (rows);
   options->name_mode = gtk_combo_box_get_active (GTK_COMBO_BOX (fields->name_mode));
   options->case_sensitive = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (fields->match_case));
   options->recursive = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (fields->recursive));
   options->show_hidden = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (fields->hidden));
+  options->exclude_directories = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (fields->exclude_directories));
   gtk_spin_button_update (GTK_SPIN_BUTTON (fields->min_size));
   gtk_spin_button_update (GTK_SPIN_BUTTON (fields->max_size));
   options->min_size = (guint64) (gtk_spin_button_get_value (GTK_SPIN_BUTTON (fields->min_size)) * 1024);

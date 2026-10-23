@@ -60,9 +60,10 @@ after changes inside subfolders. Properties may use binary units (KiB, MiB), so
 the same byte count can have a different displayed number there.
 
 Local searches require ripgrep (`rg`) on `PATH`. They use `rg --files` to
-enumerate files recursively from the current directory, then match only each
-file's basename. File contents are never searched, and directories are not
-returned. Matching keeps Thunar's case-insensitive, accent-insensitive literal
+enumerate files recursively from the current directory and a lightweight
+name/type enumeration for directories, including empty ones. Both files and
+directories are returned by default, matching only their basenames. Ordinary
+search never reads file contents. Matching keeps Thunar's case-insensitive, accent-insensitive literal
 search terms (all whitespace-separated terms must match).
 
 Local searches always include subdirectories. They include files excluded by
@@ -74,13 +75,26 @@ search implementation and recursive-search preference.
 Use **Go → Advanced Search…** or **Ctrl+Shift+F** for additional filters. The
 same dialog is available from the **Advanced Search…** button below search
 results. It supports filename words, wildcards (`*` and `?`), or regular
-expressions; optional literal text inside files; minimum and maximum sizes in
+expressions; repeatable include/exclude text rules; minimum and maximum sizes in
 KiB; inclusive modified-date ranges; case sensitivity; hidden files; and
 subfolder searches. Empty filters match any value, and maximum size 0 means
 unlimited. Filters are combined, and matching files appear in the normal view.
 
+Use **Add rule** for additional text conditions. Each row chooses **Include** or
+**Exclude**, and **Filename** (the default) or **File contents**. All include
+rules must match and no excluded text may occur; separate content includes can
+match on different lines in a file. Rule text is literal, and blank rows are
+ignored. The separate filename filter still supports words, wildcards and
+regular expressions. Rules can be removed and are retained when reopening the
+dialog for the current search.
+
+**Exclude directories** hides folders from Advanced Search results without
+preventing searches inside them. Content rules return files only, since
+directories do not have searchable file contents. Size filters use filesystem
+metadata, not recursive folder totals.
+
 Advanced search works in local folders. Content search reads files only when
-the content-text field is filled in; it uses ripgrep's normal text-search
+a nonempty File contents rule is present; it uses ripgrep's normal text-search
 behavior and does not extract text from formats such as PDF or Word documents.
 Results are a snapshot: use Refresh to rerun the search. Each tab retains its
 own filters until the search is cancelled. The ordinary Ctrl+F filename search

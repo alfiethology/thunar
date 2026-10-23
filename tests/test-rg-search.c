@@ -107,7 +107,9 @@ test_files (Fixture *fixture,
   g_assert_true (thunar_rg_search (fixture->directory, FALSE, fixture->cancellable,
                                   collect, fixture, &error));
   g_assert_no_error (error);
-  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, 4);
+  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, 6);
+  g_assert_true (g_hash_table_contains (fixture->paths, "sub"));
+  g_assert_true (g_hash_table_contains (fixture->paths, "sub/deeper"));
   g_assert_true (g_hash_table_contains (fixture->paths, "top.txt"));
   g_assert_true (g_hash_table_contains (fixture->paths, "sub/deeper/file.txt"));
   g_assert_true (g_hash_table_contains (fixture->paths, "sub/space newline\n--[x]$().txt"));
@@ -117,7 +119,7 @@ test_files (Fixture *fixture,
   g_assert_true (thunar_rg_search (fixture->directory, TRUE, fixture->cancellable,
                                   collect, fixture, &error));
   g_assert_no_error (error);
-  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, 10);
+  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, 14);
   g_assert_true (g_hash_table_contains (fixture->paths, ".hidden/inside.txt"));
   g_assert_true (g_hash_table_contains (fixture->paths, "backup-dir~/inside.txt"));
 }
@@ -160,6 +162,11 @@ test_inaccessible_paths (Fixture *fixture,
     g_test_skip ("This user can read directories even without permission bits");
   else
     {
+      run_filtered (fixture, options, 2); /* The unreadable directory itself is a result. */
+      g_assert_true (g_hash_table_contains (fixture->paths, "readable.txt"));
+      g_free (options->content);
+      options->content = g_strdup ("");
+      thunar_search_options_add_rule (options, "forbidden", TRUE, TRUE);
       run_filtered (fixture, options, 1);
       g_assert_true (g_hash_table_contains (fixture->paths, "readable.txt"));
       g_free (options->content);
@@ -186,15 +193,15 @@ test_name_and_content (Fixture *fixture,
 
   g_free (options->name);
   options->name = g_strdup ("report");
-  run_filtered (fixture, options, 3); /* A matching parent folder is not enough. */
+  run_filtered (fixture, options, 4); /* Match the folder itself, not its nonmatching children. */
   options->recursive = FALSE;
-  run_filtered (fixture, options, 2);
+  run_filtered (fixture, options, 3);
   options->recursive = TRUE;
   options->show_hidden = TRUE;
-  run_filtered (fixture, options, 4);
+  run_filtered (fixture, options, 5);
   options->show_hidden = FALSE;
   options->case_sensitive = TRUE;
-  run_filtered (fixture, options, 2);
+  run_filtered (fixture, options, 3);
   options->case_sensitive = FALSE;
 
   g_free (options->name);
@@ -223,6 +230,112 @@ test_name_and_content (Fixture *fixture,
   options->name_mode = THUNAR_SEARCH_NAME_CONTAINS;
   run_filtered (fixture, options, 1);
   g_assert_true (g_hash_table_contains (fixture->paths, "Straße.TXT"));
+  thunar_search_options_free (options);
+}
+
+static void
+test_directories (Fixture *fixture, gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  const gchar *directories[] = { "report empty", "sub/report folder", ".hidden/report", "backup~/report" };
+  for (guint i = 0; i < G_N_ELEMENTS (directories); ++i)
+    {
+      gchar *path = g_build_filename (fixture->path, directories[i], NULL);
+      g_assert_cmpint (g_mkdir_with_parents (path, 0700), ==, 0);
+      g_free (path);
+    }
+  write_file (fixture, "report.txt", "needle");
+  write_file (fixture, "sub/report.txt", "needle");
+  write_file (fixture, "report empty/not-a-match.txt", "needle");
+  g_free (options->name);
+  options->name = g_strdup ("report");
+  run_filtered (fixture, options, 4);
+  g_assert_true (g_hash_table_contains (fixture->paths, "report empty"));
+  g_assert_true (g_hash_table_contains (fixture->paths, "sub/report folder"));
+  g_assert_false (g_hash_table_contains (fixture->paths, "report empty/not-a-match.txt"));
+  options->exclude_directories = TRUE;
+  run_filtered (fixture, options, 2);
+  g_assert_true (g_hash_table_contains (fixture->paths, "sub/report.txt"));
+  options->exclude_directories = FALSE;
+  options->recursive = FALSE;
+  run_filtered (fixture, options, 2);
+  options->recursive = TRUE;
+  options->show_hidden = TRUE;
+  run_filtered (fixture, options, 6);
+  thunar_search_options_add_rule (options, "empty", TRUE, FALSE);
+  run_filtered (fixture, options, 5);
+  thunar_search_options_add_rule (options, "needle", FALSE, TRUE);
+  run_filtered (fixture, options, 2); /* Content rules cannot match directories. */
+  thunar_search_options_free (options);
+}
+
+static void
+cancel_directory_result (const gchar *path, gpointer user_data)
+{
+  Fixture *fixture = user_data;
+  collect (path, fixture);
+  g_cancellable_cancel (fixture->cancellable);
+}
+
+static void
+test_directory_cancellation (Fixture *fixture, gconstpointer unused)
+{
+  gchar *path = g_build_filename (fixture->path, "empty", NULL);
+  GError *error = NULL;
+  g_assert_cmpint (g_mkdir (path, 0700), ==, 0);
+  g_assert_false (thunar_rg_search (fixture->directory, FALSE, fixture->cancellable,
+                                   cancel_directory_result, fixture, &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  g_assert_true (g_hash_table_contains (fixture->paths, "empty"));
+  g_clear_error (&error);
+  g_free (path);
+}
+
+static void
+test_rules (Fixture *fixture, gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  write_file (fixture, "Report-final.txt", "ALPHA\nbeta\n");
+  write_file (fixture, "Report-draft.txt", "alpha beta");
+  write_file (fixture, "Report-missing.txt", "alpha");
+  write_file (fixture, "Report-bad.txt", "alpha beta forbidden");
+  write_file (fixture, "other-final.txt", "alpha beta");
+  thunar_search_options_add_rule (options, "REPORT", FALSE, FALSE);
+  thunar_search_options_add_rule (options, "draft", TRUE, FALSE);
+  run_filtered (fixture, options, 3);
+  thunar_search_options_add_rule (options, "alpha", FALSE, TRUE);
+  thunar_search_options_add_rule (options, "beta", FALSE, TRUE);
+  run_filtered (fixture, options, 2); /* Includes may occur on different lines. */
+  thunar_search_options_add_rule (options, "forbidden", TRUE, TRUE);
+  run_filtered (fixture, options, 1);
+  g_assert_true (g_hash_table_contains (fixture->paths, "Report-final.txt"));
+  options->max_size = 10;
+  run_filtered (fixture, options, 0); /* Metadata filters also combine with rules. */
+  options->max_size = G_MAXUINT64;
+  options->case_sensitive = TRUE;
+  run_filtered (fixture, options, 0);
+  options->case_sensitive = FALSE;
+  thunar_search_options_add_rule (options, "", TRUE, TRUE);
+  run_filtered (fixture, options, 1); /* Blank exclusions never exclude everything. */
+
+  ThunarSearchOptions *copy = thunar_search_options_copy (options);
+  ThunarSearchRule *rule = g_ptr_array_index (options->rules, 0);
+  g_free (rule->text);
+  rule->text = g_strdup ("changed");
+  run_filtered (fixture, copy, 1); /* Jobs and tabs own independent rule lists. */
+  thunar_search_options_free (copy);
+  g_ptr_array_set_size (options->rules, 0);
+  thunar_search_options_add_rule (options, "forbidden", TRUE, TRUE);
+  run_filtered (fixture, options, 4); /* Exclusion-only searches work. */
+  g_ptr_array_set_size (options->rules, 0);
+  thunar_search_options_add_rule (options, "report", TRUE, FALSE);
+  run_filtered (fixture, options, 1);
+  g_assert_true (g_hash_table_contains (fixture->paths, "other-final.txt"));
+  write_file (fixture, "literal[1]--.txt", "[not a regex] --flag");
+  g_ptr_array_set_size (options->rules, 0);
+  thunar_search_options_add_rule (options, "[1]--", FALSE, FALSE);
+  thunar_search_options_add_rule (options, "[not a regex] --flag", FALSE, TRUE);
+  run_filtered (fixture, options, 1);
   thunar_search_options_free (options);
 }
 
@@ -378,6 +491,26 @@ test_process_errors (Fixture *fixture,
   g_assert_cmpint (g_get_monotonic_time () - started, <, 2 * G_USEC_PER_SEC);
   g_clear_error (&error);
 
+  /* Cancellation must also reap a later content-rule scan, after a completed
+   * first pass has populated the intersection. */
+  g_cancellable_reset (fixture->cancellable);
+  write_file (fixture, "rg", "#!/bin/sh\nfor arg; do\n"
+              "if [ \"$arg\" = second ]; then exec /bin/sleep 30; fi\ndone\n"
+              "printf './readable.txt\\0'\n");
+  g_assert_cmpint (g_chmod (executable, 0700), ==, 0);
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  thunar_search_options_add_rule (options, "first", FALSE, TRUE);
+  thunar_search_options_add_rule (options, "second", TRUE, TRUE);
+  started = g_get_monotonic_time ();
+  thread = g_thread_new ("cancel-search-rules", cancel_later, fixture->cancellable);
+  g_assert_false (thunar_rg_search_full (fixture->directory, options, fixture->cancellable,
+                                        collect, fixture, &error));
+  g_thread_join (thread);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  g_assert_cmpint (g_get_monotonic_time () - started, <, 2 * G_USEC_PER_SEC);
+  g_clear_error (&error);
+  thunar_search_options_free (options);
+
   g_free (executable);
 }
 
@@ -387,10 +520,13 @@ main (int argc, char **argv)
   g_test_init (&argc, &argv, NULL);
   g_test_add ("/rg/files", Fixture, NULL, setup, test_files, teardown);
   g_test_add ("/rg/empty", Fixture, NULL, setup, test_empty, teardown);
+  g_test_add ("/rg/directories", Fixture, NULL, setup, test_directories, teardown);
+  g_test_add ("/rg/directory-cancellation", Fixture, NULL, setup, test_directory_cancellation, teardown);
   g_test_add ("/rg/inaccessible-paths", Fixture, NULL, setup, test_inaccessible_paths, teardown);
   g_test_add ("/rg/pre-cancelled", Fixture, NULL, setup, test_pre_cancelled, teardown);
   g_test_add ("/rg/process-errors", Fixture, NULL, setup, test_process_errors, teardown);
   g_test_add ("/rg/advanced/name-and-content", Fixture, NULL, setup, test_name_and_content, teardown);
+  g_test_add ("/rg/advanced/rules", Fixture, NULL, setup, test_rules, teardown);
   g_test_add ("/rg/advanced/size-and-dates", Fixture, NULL, setup, test_size_and_dates, teardown);
   g_test_add_func ("/rg/advanced/invalid-filters", test_invalid_filters);
   return g_test_run ();

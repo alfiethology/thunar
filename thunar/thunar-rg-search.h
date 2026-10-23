@@ -17,12 +17,21 @@ typedef enum
 
 typedef struct
 {
+  gchar    *text;
+  gboolean  exclude;
+  gboolean  in_contents; /* FALSE searches the basename, never its parent path. */
+} ThunarSearchRule;
+
+typedef struct
+{
   gchar                *name;
   gchar                *content;
+  GPtrArray            *rules; /* owned ThunarSearchRule entries; all are combined with AND */
   ThunarSearchNameMode   name_mode;
   gboolean              case_sensitive;
   gboolean              recursive;
   gboolean              show_hidden;
+  gboolean              exclude_directories;
   guint64               min_size;
   guint64               max_size;
   gint64                modified_after;
@@ -32,6 +41,10 @@ typedef struct
 #define THUNAR_TYPE_SEARCH_OPTIONS (thunar_search_options_get_type ())
 GType                thunar_search_options_get_type  (void) G_GNUC_CONST;
 ThunarSearchOptions *thunar_search_options_new       (void);
+void                 thunar_search_options_add_rule (ThunarSearchOptions *options,
+                                                     const gchar         *text,
+                                                     gboolean             exclude,
+                                                     gboolean             in_contents);
 ThunarSearchOptions *thunar_search_options_copy      (const ThunarSearchOptions *options);
 void                 thunar_search_options_free      (ThunarSearchOptions       *options);
 gboolean             thunar_search_options_validate  (const ThunarSearchOptions *options,

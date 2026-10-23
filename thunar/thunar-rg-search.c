@@ -7,12 +7,32 @@
 G_DEFINE_BOXED_TYPE (ThunarSearchOptions, thunar_search_options,
                      thunar_search_options_copy, thunar_search_options_free)
 
+static void
+thunar_search_rule_free (gpointer data)
+{
+  ThunarSearchRule *rule = data;
+  g_free (rule->text);
+  g_free (rule);
+}
+
+void
+thunar_search_options_add_rule (ThunarSearchOptions *options, const gchar *text,
+                                gboolean exclude, gboolean in_contents)
+{
+  ThunarSearchRule *rule = g_new0 (ThunarSearchRule, 1);
+  rule->text = g_strdup (text);
+  rule->exclude = exclude;
+  rule->in_contents = in_contents;
+  g_ptr_array_add (options->rules, rule);
+}
+
 ThunarSearchOptions *
 thunar_search_options_new (void)
 {
   ThunarSearchOptions *options = g_new0 (ThunarSearchOptions, 1);
   options->name = g_strdup ("");
   options->content = g_strdup ("");
+  options->rules = g_ptr_array_new_with_free_func (thunar_search_rule_free);
   options->recursive = TRUE;
   options->max_size = G_MAXUINT64;
   options->modified_after = G_MININT64;
@@ -30,6 +50,12 @@ thunar_search_options_copy (const ThunarSearchOptions *options)
   *copy = *options;
   copy->name = g_strdup (options->name);
   copy->content = g_strdup (options->content);
+  copy->rules = g_ptr_array_new_with_free_func (thunar_search_rule_free);
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      thunar_search_options_add_rule (copy, rule->text, rule->exclude, rule->in_contents);
+    }
   return copy;
 }
 
@@ -40,6 +66,7 @@ thunar_search_options_free (ThunarSearchOptions *options)
     return;
   g_free (options->name);
   g_free (options->content);
+  g_ptr_array_unref (options->rules);
   g_free (options);
 }
 
@@ -178,7 +205,7 @@ thunar_search_matches (GFile                     *directory,
   GFileInfo *info;
 
   /* Keep unfiltered filename enumeration on the basic search's fast path. */
-  if (*options->name == '\0' && options->min_size == 0 && options->max_size == G_MAXUINT64
+  if (*options->name == '\0' && options->rules->len == 0 && options->min_size == 0 && options->max_size == G_MAXUINT64
       && options->modified_after == G_MININT64 && options->modified_before == G_MAXINT64)
     return TRUE;
 
@@ -195,6 +222,18 @@ thunar_search_matches (GFile                     *directory,
             break;
           }
       g_free (folded);
+    }
+  for (guint i = 0; matches && i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (!rule->in_contents && *rule->text != '\0')
+        {
+          gchar *haystack = options->case_sensitive ? g_strdup (name) : g_utf8_casefold (name, -1);
+          gchar *needle = options->case_sensitive ? g_strdup (rule->text) : g_utf8_casefold (rule->text, -1);
+          matches = (strstr (haystack, needle) != NULL) != rule->exclude;
+          g_free (needle);
+          g_free (haystack);
+        }
     }
   g_free (name);
   if (!matches)
@@ -245,9 +284,10 @@ thunar_rg_search (GFile              *directory,
   return success;
 }
 
-gboolean
-thunar_rg_search_full (GFile                     *directory,
+static gboolean
+thunar_rg_search_single (GFile                     *directory,
                        const ThunarSearchOptions *options,
+                       gboolean                   exclude_content,
                        GCancellable              *cancellable,
                        ThunarRgSearchFunc         callback,
                        gpointer                   user_data,
@@ -273,7 +313,8 @@ thunar_rg_search_full (GFile                     *directory,
 
   argv[argc++] = "rg";
   argv[argc++] = "--no-config";
-  argv[argc++] = *options->content != '\0' ? "--files-with-matches" : "--files";
+  argv[argc++] = *options->content != '\0'
+                  ? (exclude_content ? "--files-without-match" : "--files-with-matches") : "--files";
   argv[argc++] = "--null";
   argv[argc++] = "--no-ignore";
   argv[argc++] = "--color=never";
@@ -366,4 +407,126 @@ thunar_rg_search_full (GFile                     *directory,
     }
 
   return TRUE;
+}
+
+typedef struct
+{
+  GHashTable *previous;
+  GHashTable *next;
+  ThunarRgSearchFunc callback;
+  gpointer user_data;
+} ThunarSearchIntersection;
+
+static gboolean
+thunar_search_directories (GFile *directory, const ThunarSearchOptions *options,
+                           GCancellable *cancellable, ThunarRgSearchFunc callback,
+                           gpointer user_data, GError **error)
+{
+  GQueue pending = G_QUEUE_INIT;
+  GRegex *regex = thunar_search_name_regex (options, NULL);
+  gchar *name = options->case_sensitive ? g_strdup (options->name) : g_utf8_casefold (options->name, -1);
+  gchar **terms = g_regex_split_simple ("\\s+", name, 0, 0);
+  g_free (name);
+  g_queue_push_tail (&pending, g_strdup ("."));
+  /* rg --files does not expose directories, including empty ones. Enumerate
+   * only names and types for this extra pass: no per-file metadata queries,
+   * symlink traversal, or file-content reads. This runs in the search worker. */
+  while (!g_queue_is_empty (&pending) && !g_cancellable_is_cancelled (cancellable))
+    {
+      gchar *relative = g_queue_pop_head (&pending);
+      GFile *parent = g_file_resolve_relative_path (directory, relative);
+      GFileEnumerator *entries = g_file_enumerate_children (parent,
+          G_FILE_ATTRIBUTE_STANDARD_NAME "," G_FILE_ATTRIBUTE_STANDARD_TYPE,
+          G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, cancellable, NULL);
+      GFileInfo *info;
+      g_object_unref (parent);
+      if (entries != NULL)
+        {
+          while (!g_cancellable_is_cancelled (cancellable)
+                 && (info = g_file_enumerator_next_file (entries, cancellable, NULL)) != NULL)
+            {
+              const gchar *child_name = g_file_info_get_name (info);
+              if (g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY
+                  && (options->show_hidden || (child_name[0] != '.' && !g_str_has_suffix (child_name, "~"))))
+                {
+                  gchar *path = g_build_filename (relative, child_name, NULL);
+                  if (thunar_search_matches (directory, path, options, regex, terms, cancellable))
+                    callback (path, user_data);
+                  if (options->recursive)
+                    g_queue_push_tail (&pending, path);
+                  else
+                    g_free (path);
+                }
+              g_object_unref (info);
+            }
+          g_object_unref (entries);
+        }
+      g_free (relative);
+    }
+  g_queue_clear_full (&pending, g_free);
+  if (regex != NULL)
+    g_regex_unref (regex);
+  g_strfreev (terms);
+  return !g_cancellable_set_error_if_cancelled (cancellable, error);
+}
+
+static void
+thunar_search_intersect (const gchar *path, gpointer user_data)
+{
+  ThunarSearchIntersection *intersection = user_data;
+  if (intersection->previous == NULL || g_hash_table_contains (intersection->previous, path))
+    {
+      if (intersection->next != NULL)
+        g_hash_table_add (intersection->next, g_strdup (path));
+      else
+        intersection->callback (path, intersection->user_data);
+    }
+}
+
+gboolean
+thunar_rg_search_full (GFile *directory, const ThunarSearchOptions *options,
+                       GCancellable *cancellable, ThunarRgSearchFunc callback,
+                       gpointer user_data, GError **error)
+{
+  GPtrArray *contents;
+  ThunarSearchRule legacy = { options->content, FALSE, TRUE };
+  ThunarSearchIntersection intersection = { NULL, NULL, callback, user_data };
+  gboolean success = TRUE;
+  if (!thunar_search_options_validate (options, error))
+    return FALSE;
+  contents = g_ptr_array_new ();
+  if (*options->content != '\0')
+    g_ptr_array_add (contents, &legacy);
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (rule->in_contents && *rule->text != '\0')
+        g_ptr_array_add (contents, rule);
+    }
+  /* Filename-only searches keep the streaming rg --files fast path. Content
+   * rules use one bounded-memory scan each, intersecting file sets rather than
+   * launching a process for every file. Exclusions select successfully read
+   * nonmatching files, so unreadable files cannot falsely pass an exclusion. */
+  if (contents->len == 0)
+    {
+      success = thunar_rg_search_single (directory, options, FALSE, cancellable, callback, user_data, error);
+      if (success && !options->exclude_directories)
+        success = thunar_search_directories (directory, options, cancellable, callback, user_data, error);
+    }
+  for (guint i = 0; success && i < contents->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (contents, i);
+      ThunarSearchOptions pass = *options;
+      pass.content = rule->text;
+      intersection.next = i + 1 < contents->len ? g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL) : NULL;
+      success = thunar_rg_search_single (directory, &pass, rule->exclude, cancellable,
+                                          thunar_search_intersect, &intersection, error);
+      g_clear_pointer (&intersection.previous, g_hash_table_unref);
+      intersection.previous = intersection.next;
+      if (success && intersection.previous != NULL && g_hash_table_size (intersection.previous) == 0)
+        break;
+    }
+  g_clear_pointer (&intersection.previous, g_hash_table_unref);
+  g_ptr_array_unref (contents);
+  return success;
 }
