@@ -7,6 +7,7 @@
 #include <thunar/thunar-window.h>
 #include <thunar/thunar-standard-view.h>
 #include <thunar/thunar-location-bar.h>
+#include <thunar/thunar-list-model.h>
 #include <thunar/thunar-gobject-extensions.h>
 #include <thunar/thunar-resources.h>
 #include <thunar/thunar-util.h>
@@ -44,6 +45,126 @@ dispatch_for (gint64 microseconds)
       g_usleep (1000);
     }
   while (g_get_monotonic_time () < deadline);
+}
+
+static gchar *
+size_for_name (ThunarListModel *model, const gchar *name)
+{
+  GtkTreeIter iter;
+  gboolean valid = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (model), &iter);
+  while (valid)
+    {
+      gchar *row_name;
+      gtk_tree_model_get (GTK_TREE_MODEL (model), &iter, THUNAR_COLUMN_FILE_NAME, &row_name, -1);
+      if (g_strcmp0 (row_name, name) == 0)
+        {
+          gchar *size;
+          g_free (row_name);
+          gtk_tree_model_get (GTK_TREE_MODEL (model), &iter, THUNAR_COLUMN_SIZE_IN_BYTES, &size, -1);
+          return size;
+        }
+      g_free (row_name);
+      valid = gtk_tree_model_iter_next (GTK_TREE_MODEL (model), &iter);
+    }
+  return NULL;
+}
+
+static void
+assert_folder_size (ThunarListModel *model, const gchar *name, const gchar *expected)
+{
+  gint64 deadline = g_get_monotonic_time () + 5 * G_USEC_PER_SEC;
+  gchar *size;
+  do
+    {
+      dispatch_for (10000);
+      size = size_for_name (model, name);
+      if (g_strcmp0 (size, expected) == 0)
+        {
+          g_free (size);
+          return;
+        }
+      g_free (size);
+    }
+  while (g_get_monotonic_time () < deadline);
+  size = size_for_name (model, name);
+  g_assert_cmpstr (size, ==, expected);
+  g_free (size);
+}
+
+static void
+test_folder_sizes (void)
+{
+  gchar *root = g_dir_make_tmp ("thunar-folder-size-XXXXXX", NULL);
+  gchar *nested = g_build_filename (root, "folder/sub", NULL);
+  gchar *data = g_build_filename (nested, ".hidden", NULL);
+  gchar *loop = g_build_filename (nested, "loop", NULL);
+  gchar *empty = g_build_filename (root, "empty", NULL);
+  gchar *regular = g_build_filename (root, "file", NULL);
+  gchar *payload = g_strnfill (23700, 'x');
+  GFile *location;
+  GFile *link;
+  ThunarFile *file;
+  ThunarFolder *folder;
+  ThunarListModel *model;
+  gchar *size;
+
+  g_assert_cmpint (g_mkdir_with_parents (nested, 0700), ==, 0);
+  g_assert_cmpint (g_mkdir (empty, 0700), ==, 0);
+  g_assert_true (g_file_set_contents (data, payload, -1, NULL));
+  g_assert_true (g_file_set_contents (regular, "test", -1, NULL));
+  link = g_file_new_for_path (loop);
+  g_assert_true (g_file_make_symbolic_link (link, "..", NULL, NULL));
+  g_object_unref (link);
+  location = g_file_new_for_path (root);
+  file = thunar_file_get (location, NULL);
+  folder = thunar_folder_get_for_file (file);
+  model = thunar_list_model_new ();
+  thunar_list_model_set_folder (model, folder, NULL);
+  /* Hidden descendants count; directory metadata does not; loops are not followed. */
+  assert_folder_size (model, "folder", "23.7KB");
+  assert_folder_size (model, "empty", "0.0B");
+  assert_folder_size (model, "file", "4.0B");
+  gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (model), THUNAR_COLUMN_SIZE_IN_BYTES, GTK_SORT_DESCENDING);
+  GtkTreeIter first;
+  gchar *first_name;
+  g_assert_true (gtk_tree_model_get_iter_first (GTK_TREE_MODEL (model), &first));
+  gtk_tree_model_get (GTK_TREE_MODEL (model), &first, THUNAR_COLUMN_FILE_NAME, &first_name, -1);
+  g_assert_cmpstr (first_name, ==, "folder");
+  g_free (first_name);
+
+  g_assert_true (g_file_set_contents (data, "a", -1, NULL));
+  thunar_folder_reload (folder, TRUE);
+  /* Refresh invalidates the cache, including changes deep inside a subfolder. */
+  assert_folder_size (model, "folder", "3.0B");
+
+  /* Start a fresh scan and navigate/dispose before its completion is dispatched. */
+  thunar_list_model_set_folder (model, folder, NULL);
+  size = size_for_name (model, "folder");
+  g_assert_cmpstr (size, ==, "Calculating...");
+  g_free (size);
+  thunar_list_model_set_folder (model, NULL, NULL);
+  g_object_unref (model);
+  dispatch_for (150000);
+  g_object_unref (folder);
+  g_object_unref (file);
+  g_object_unref (location);
+  g_unlink (loop);
+  g_unlink (data);
+  g_unlink (regular);
+  g_rmdir (nested);
+  gchar *parent = g_path_get_dirname (nested);
+  g_rmdir (parent);
+  g_free (parent);
+  g_rmdir (empty);
+  g_rmdir (root);
+  g_free (payload);
+  g_free (regular);
+  g_free (empty);
+  g_free (loop);
+  g_free (data);
+  g_free (nested);
+  g_free (root);
+  g_print ("Folder totals, refresh and pending-scan navigation passed\n");
 }
 
 static void
@@ -123,6 +244,7 @@ int main (int argc, char **argv)
   app = thunar_application_get ();
   g_assert_true (g_application_register (G_APPLICATION (app), NULL, &error));
   g_assert_no_error (error);
+  test_folder_sizes ();
   file = g_file_new_for_path (argv[1]);
   source = thunar_file_get (file, &error);
   g_assert_no_error (error);

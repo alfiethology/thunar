@@ -33,6 +33,7 @@
 #include <libxfce4util/libxfce4util.h>
 
 #include <thunar/thunar-application.h>
+#include <thunar/thunar-deep-count-job.h>
 #include <thunar/thunar-file.h>
 #include <thunar/thunar-file-monitor.h>
 #include <thunar/thunar-gobject-extensions.h>
@@ -302,6 +303,10 @@ struct _ThunarListModel
   gint           sort_sign;   /* 1 = ascending, -1 descending */
   ThunarSortFunc sort_func;
 
+  /* Lazy folder totals belong to this view, so navigation cancels their work. */
+  GHashTable    *folder_sizes;
+  guint          folder_size_jobs;
+
   /* searching runs in a separate thread which incrementally inserts results (files)
    * in the files_to_add list.
    * Periodically the main thread takes all the files in the files_to_add list
@@ -328,6 +333,129 @@ G_DEFINE_TYPE_WITH_CODE (ThunarListModel, thunar_list_model, G_TYPE_OBJECT,
     G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_DEST, thunar_list_model_drag_dest_init)
     G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_SORTABLE, thunar_list_model_sortable_init))
 
+
+typedef struct
+{
+  ThunarListModel *store;
+  ThunarFile      *file;
+  ThunarDeepCountJob *job;
+  guint64         bytes;
+  gboolean        ready;
+  gboolean        failed;
+  gboolean        partial;
+} ThunarFolderSize;
+
+static void thunar_list_model_start_size_jobs (ThunarListModel *store);
+
+static void
+thunar_folder_size_free (gpointer data)
+{
+  ThunarFolderSize *size = data;
+  if (size->job != NULL)
+    {
+      g_signal_handlers_disconnect_by_data (size->job, size->store);
+      exo_job_cancel (EXO_JOB (size->job));
+      g_object_unref (size->job);
+      --size->store->folder_size_jobs;
+    }
+  g_object_unref (size->file);
+  g_free (size);
+}
+
+static ThunarFolderSize *
+thunar_list_model_job_size (ThunarListModel *store, ExoJob *job)
+{
+  ThunarFolderSize *size = g_hash_table_lookup (store->folder_sizes,
+                                               g_object_get_data (G_OBJECT (job), "size-file"));
+  return size != NULL && EXO_JOB (size->job) == job ? size : NULL;
+}
+
+static void
+thunar_list_model_size_status (ThunarDeepCountJob *job, guint64 bytes,
+                               guint files, guint directories, guint unreadable,
+                               ThunarListModel *store)
+{
+  ThunarFolderSize *size = thunar_list_model_job_size (store, EXO_JOB (job));
+  if (size != NULL)
+    {
+      size->bytes = bytes;
+      size->partial = unreadable > 0;
+    }
+}
+
+static void
+thunar_list_model_size_error (ExoJob *job, GError *error, ThunarListModel *store)
+{
+  ThunarFolderSize *size = thunar_list_model_job_size (store, job);
+  if (size != NULL)
+    size->failed = TRUE;
+}
+
+static void
+thunar_list_model_size_finished (ExoJob *job, ThunarListModel *store)
+{
+  ThunarFolderSize *size = thunar_list_model_job_size (store, job);
+  ThunarFile *file;
+  if (size == NULL)
+    return;
+  file = g_object_ref (size->file);
+  size->ready = TRUE;
+  g_signal_handlers_disconnect_by_data (job, store);
+  g_clear_object (&size->job);
+  --store->folder_size_jobs;
+  thunar_list_model_file_changed (NULL, file, store);
+  thunar_list_model_start_size_jobs (store);
+  g_object_unref (file);
+}
+
+static void
+thunar_list_model_start_size_jobs (ThunarListModel *store)
+{
+  GHashTableIter iter;
+  gpointer value;
+  g_hash_table_iter_init (&iter, store->folder_sizes);
+  while (store->folder_size_jobs < 2 && g_hash_table_iter_next (&iter, NULL, &value))
+    {
+      ThunarFolderSize *size = value;
+      if (!size->ready && size->job == NULL)
+        {
+          GList files = { size->file, NULL, NULL };
+          size->job = thunar_deep_count_job_new (&files, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS);
+          g_object_set_data (G_OBJECT (size->job), "size-file", size->file);
+          g_signal_connect_object (size->job, "status-update", G_CALLBACK (thunar_list_model_size_status), store, 0);
+          g_signal_connect_object (size->job, "error", G_CALLBACK (thunar_list_model_size_error), store, 0);
+          g_signal_connect_object (size->job, "finished", G_CALLBACK (thunar_list_model_size_finished), store, 0);
+          ++store->folder_size_jobs;
+          exo_job_launch (EXO_JOB (size->job));
+        }
+    }
+}
+
+static gchar *
+thunar_list_model_folder_size_string (ThunarListModel *store, ThunarFile *file)
+{
+  ThunarFolderSize *size = g_hash_table_lookup (store->folder_sizes, file);
+  if (size == NULL)
+    {
+      size = g_new0 (ThunarFolderSize, 1);
+      size->store = store;
+      size->file = g_object_ref (file);
+      g_hash_table_insert (store->folder_sizes, file, size);
+      thunar_list_model_start_size_jobs (store);
+    }
+  if (!size->ready)
+    return g_strdup (_("Calculating..."));
+  if (size->failed)
+    return g_strdup (_("Unknown"));
+  if (size->partial)
+    {
+      gchar *formatted = thunar_file_format_compact_size (size->bytes);
+      gchar *text = g_strconcat ("≥", formatted, NULL);
+      g_free (formatted);
+      return text;
+    }
+  return thunar_file_format_compact_size (size->bytes);
+}
 
 
 static void
@@ -533,6 +661,7 @@ thunar_list_model_sortable_init (GtkTreeSortableIface *iface)
 static void
 thunar_list_model_init (ThunarListModel *store)
 {
+  store->folder_sizes = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, thunar_folder_size_free);
   /* generate a unique stamp if we're in debug mode */
 #ifndef NDEBUG
   store->stamp = g_random_int ();
@@ -587,6 +716,7 @@ thunar_list_model_finalize (GObject *object)
   store->files_to_add = NULL;
 
   g_sequence_free (store->rows);
+  g_hash_table_unref (store->folder_sizes);
   g_mutex_clear (&store->mutex_files_to_add);
 
   /* disconnect from the file monitor */
@@ -1036,7 +1166,9 @@ thunar_list_model_get_value (GtkTreeModel *model,
 
     case THUNAR_COLUMN_SIZE_IN_BYTES:
       g_value_init (value, G_TYPE_STRING);
-      g_value_take_string (value, thunar_file_get_compact_size_string (file));
+      g_value_take_string (value, thunar_file_is_directory (file)
+                                 ? thunar_list_model_folder_size_string (THUNAR_LIST_MODEL (model), file)
+                                 : thunar_file_get_compact_size_string (file));
       break;
 
     case THUNAR_COLUMN_TYPE:
@@ -1368,6 +1500,16 @@ thunar_list_model_cmp_func (gconstpointer a,
         return isdir_a ? -1 : 1;
     }
 
+  if (store->sort_func == sort_by_size_in_bytes)
+    {
+      ThunarFolderSize *size_a = g_hash_table_lookup (store->folder_sizes, a);
+      ThunarFolderSize *size_b = g_hash_table_lookup (store->folder_sizes, b);
+      guint64 bytes_a = thunar_file_is_directory (a) ? (size_a != NULL ? size_a->bytes : 0) : thunar_file_get_size (a);
+      guint64 bytes_b = thunar_file_is_directory (b) ? (size_b != NULL ? size_b->bytes : 0) : thunar_file_get_size (b);
+      if (bytes_a != bytes_b)
+        return (bytes_a < bytes_b ? -1 : 1) * store->sort_sign;
+      return thunar_file_compare_by_name (a, b, store->sort_case_sensitive) * store->sort_sign;
+    }
   return (*store->sort_func) (a, b, store->sort_case_sensitive) * store->sort_sign;
 }
 
@@ -1449,6 +1591,9 @@ thunar_list_model_file_changed (ThunarFileMonitor *file_monitor,
   _thunar_return_if_fail (THUNAR_IS_FILE_MONITOR (file_monitor) || file_monitor == NULL);
   _thunar_return_if_fail (THUNAR_IS_LIST_MODEL (store));
   _thunar_return_if_fail (THUNAR_IS_FILE (file));
+
+  if (file_monitor != NULL && g_hash_table_remove (store->folder_sizes, file))
+    thunar_list_model_start_size_jobs (store);
 
   row = g_sequence_get_begin_iter (store->rows);
   end = g_sequence_get_end_iter (store->rows);
@@ -1686,6 +1831,7 @@ thunar_list_model_files_removed (ThunarFolder    *folder,
   search_mode = (store->search_terms != NULL);
   for (lp = files; lp != NULL; lp = lp->next)
     {
+      g_hash_table_remove (store->folder_sizes, lp->data);
       row = g_sequence_get_begin_iter (store->rows);
       end = g_sequence_get_end_iter (store->rows);
 
@@ -1729,6 +1875,8 @@ thunar_list_model_files_removed (ThunarFolder    *folder,
             }
         }
     }
+
+  thunar_list_model_start_size_jobs (store);
 
   /* this probably changed */
   g_object_notify_by_pspec (G_OBJECT (store), list_model_props[PROP_NUM_FILES]);
@@ -2728,6 +2876,9 @@ thunar_list_model_set_folder (ThunarListModel *store,
 
   _thunar_return_if_fail (THUNAR_IS_LIST_MODEL (store));
   _thunar_return_if_fail (folder == NULL || THUNAR_IS_FOLDER (folder));
+
+  /* Includes refreshes and search transitions; no old scan may outlive its view. */
+  g_hash_table_remove_all (store->folder_sizes);
 
   if (search_query == NULL)
     thunar_list_model_set_advanced_search (store, NULL);

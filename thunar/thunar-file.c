@@ -2320,12 +2320,20 @@ thunar_file_get_size_string (const ThunarFile *file)
 gchar *
 thunar_file_get_compact_size_string (const ThunarFile *file)
 {
+  _thunar_return_val_if_fail (THUNAR_IS_FILE (file), NULL);
+  return thunar_file_format_compact_size (thunar_file_get_size (file));
+}
+
+
+
+gchar *
+thunar_file_format_compact_size (guint64 bytes)
+{
   static const gchar *units[] = { "B", "KB", "MB", "GB", "TB", "PB", "EB" };
   gdouble             size;
   guint               unit = 0;
 
-  _thunar_return_val_if_fail (THUNAR_IS_FILE (file), NULL);
-  size = thunar_file_get_size (file);
+  size = bytes;
   /* Promote values that would round to 1000.0 in the smaller unit too. */
   while (size >= 999.95 && unit + 1 < G_N_ELEMENTS (units))
     {

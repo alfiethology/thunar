@@ -50,6 +50,15 @@ From release tarball:
 
 ### Filename search
 
+The **File Size** column uses compact decimal units with one decimal place
+(for example `23.7KB`). Folder totals are calculated in the background using
+the same rules as Properties, including hidden files without following symlink
+directories or crossing filesystems. At most two folder scans run per view;
+navigation cancels them. `Calculating...` marks pending totals, `Unknown` marks
+unreadable folders, and `≥` marks a partial total. Refresh to recalculate totals
+after changes inside subfolders. Properties may use binary units (KiB, MiB), so
+the same byte count can have a different displayed number there.
+
 Local searches require ripgrep (`rg`) on `PATH`. They use `rg --files` to
 enumerate files recursively from the current directory, then match only each
 file's basename. File contents are never searched, and directories are not
