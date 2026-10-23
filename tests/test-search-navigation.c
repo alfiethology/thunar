@@ -8,6 +8,7 @@
 #include <thunar/thunar-standard-view.h>
 #include <thunar/thunar-location-bar.h>
 #include <thunar/thunar-list-model.h>
+#include <thunar/thunar-column-model.h>
 #include <thunar/thunar-gobject-extensions.h>
 #include <thunar/thunar-resources.h>
 #include <thunar/thunar-util.h>
@@ -168,6 +169,65 @@ test_folder_sizes (void)
 }
 
 static void
+test_column_visibility (ThunarApplication *app, ThunarFile *source, gboolean fixed)
+{
+  ThunarPreferences *preferences = thunar_preferences_get ();
+  ThunarColumnModel *columns = thunar_column_model_get_default ();
+  g_object_set (preferences, "last-view", "ThunarDetailsView", "default-view", "ThunarDetailsView",
+                "last-details-view-fixed-columns", fixed,
+                "last-details-view-visible-columns", "THUNAR_COLUMN_NAME,THUNAR_COLUMN_TYPE", NULL);
+  GtkWidget *window = thunar_application_open_window (app, source, NULL, NULL, TRUE);
+  gtk_window_resize (GTK_WINDOW (window), 900, 600);
+  dispatch_for (200000);
+  GtkWidget *view = find_widget (window, THUNAR_TYPE_STANDARD_VIEW);
+  GtkTreeView *tree = GTK_TREE_VIEW (gtk_bin_get_child (GTK_BIN (view)));
+  GList *tree_columns = gtk_tree_view_get_columns (tree);
+  /* A wide existing column puts newly enabled columns beyond the viewport. */
+  for (GList *lp = tree_columns; lp != NULL; lp = lp->next)
+    if (gtk_tree_view_column_get_sort_column_id (lp->data) == THUNAR_COLUMN_TYPE)
+      gtk_tree_view_column_set_min_width (lp->data, 1000);
+  dispatch_for (100000);
+  ThunarColumn toggles[] = { THUNAR_COLUMN_DATE_CREATED, THUNAR_COLUMN_DATE_MODIFIED, THUNAR_COLUMN_PERMISSIONS };
+  for (guint i = 0; i < G_N_ELEMENTS (toggles); ++i)
+    {
+      thunar_column_model_set_column_visible (columns, toggles[i], TRUE);
+      /* GTK animates horizontal scrolling; allow the transition to finish. */
+      dispatch_for (350000);
+      for (GList *lp = tree_columns; lp != NULL; lp = lp->next)
+        if (gtk_tree_view_column_get_sort_column_id (lp->data) == toggles[i])
+          {
+            GdkRectangle cell;
+            GtkTreePath *path = gtk_tree_path_new_first ();
+            g_assert_true (gtk_tree_view_column_get_visible (lp->data));
+            gtk_tree_view_get_cell_area (tree, path, lp->data, &cell);
+            gtk_tree_view_convert_bin_window_to_widget_coords (tree, cell.x, cell.y, &cell.x, &cell.y);
+            g_print ("Enabled column %d: x=%d, width=%d, viewport=%d\n", toggles[i], cell.x, cell.width, gtk_widget_get_allocated_width (GTK_WIDGET (tree)));
+            g_assert_cmpint (cell.x, >=, 0);
+            g_assert_cmpint (cell.x + cell.width, <=, gtk_widget_get_allocated_width (GTK_WIDGET (tree)));
+            gtk_tree_path_free (path);
+          }
+    }
+  thunar_list_model_set_folder (THUNAR_STANDARD_VIEW (view)->model, NULL, NULL);
+  thunar_column_model_set_column_visible (columns, THUNAR_COLUMN_DATE_ACCESSED, TRUE);
+  dispatch_for (350000);
+  for (GList *lp = tree_columns; lp != NULL; lp = lp->next)
+    if (gtk_tree_view_column_get_sort_column_id (lp->data) == THUNAR_COLUMN_DATE_ACCESSED)
+      {
+        GdkRectangle area;
+        gtk_tree_view_get_cell_area (tree, NULL, lp->data, &area);
+        gtk_tree_view_convert_bin_window_to_widget_coords (tree, area.x, area.y, &area.x, &area.y);
+        g_assert_cmpint (area.x, >=, 0);
+        g_assert_cmpint (area.x + area.width, <=, gtk_widget_get_allocated_width (GTK_WIDGET (tree)));
+      }
+  g_list_free (tree_columns);
+  gtk_widget_destroy (window);
+  dispatch_for (50000);
+  g_object_unref (columns);
+  g_object_unref (preferences);
+  g_print ("Newly enabled columns are visible in the viewport\n");
+}
+
+static void
 test_navigation (ThunarApplication *app, ThunarFile *source, ThunarFile *destination, gboolean pending)
 {
   ThunarPreferences *preferences = thunar_preferences_get ();
@@ -253,6 +313,8 @@ int main (int argc, char **argv)
   destination = thunar_file_get (file, &error);
   g_assert_no_error (error);
   g_object_unref (file);
+  test_column_visibility (app, source, FALSE);
+  test_column_visibility (app, source, TRUE);
   test_navigation (app, source, destination, FALSE);
   test_navigation (app, source, destination, TRUE);
   g_object_unref (source);

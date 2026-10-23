@@ -101,6 +101,9 @@ static void         thunar_details_view_row_changed             (GtkTreeView    
                                                                  ThunarDetailsView      *details_view);
 static void         thunar_details_view_columns_changed         (ThunarColumnModel      *column_model,
                                                                  ThunarDetailsView      *details_view);
+static void         thunar_details_view_reveal_column           (GtkWidget              *tree_view,
+                                                                 GtkAllocation          *allocation,
+                                                                 ThunarDetailsView      *details_view);
 static void         thunar_details_view_zoom_level_changed      (ThunarDetailsView      *details_view);
 static gboolean     thunar_details_view_get_fixed_columns       (ThunarDetailsView      *details_view);
 static void         thunar_details_view_set_fixed_columns       (ThunarDetailsView      *details_view,
@@ -130,6 +133,8 @@ struct _ThunarDetailsView
 
   /* the column model */
   ThunarColumnModel *column_model;
+
+  GtkTreeViewColumn *reveal_column;
 
   /* the tree view columns */
   GtkTreeViewColumn *columns[THUNAR_N_VISIBLE_COLUMNS];
@@ -241,6 +246,8 @@ thunar_details_view_init (ThunarDetailsView *details_view)
                     G_CALLBACK (thunar_details_view_select_cursor_row), details_view);
   gtk_container_add (GTK_CONTAINER (details_view), GTK_WIDGET (details_view->tree_view));
   gtk_widget_show (GTK_WIDGET (details_view->tree_view));
+  g_signal_connect_after (details_view->tree_view, "size-allocate",
+                          G_CALLBACK (thunar_details_view_reveal_column), details_view);
 
   /* configure general aspects of the details view */
   gtk_tree_view_set_enable_search (GTK_TREE_VIEW (details_view->tree_view), TRUE);
@@ -920,11 +927,41 @@ thunar_details_view_row_changed (GtkTreeView       *tree_view,
 
 
 static void
+thunar_details_view_reveal_column (GtkWidget *tree_view,
+                                   GtkAllocation *allocation,
+                                   ThunarDetailsView *details_view)
+{
+  if (details_view->reveal_column != NULL
+      && gtk_tree_view_column_get_width (details_view->reveal_column) > 0)
+    {
+      GtkTreeViewColumn *column = details_view->reveal_column;
+      GtkTreeModel *model = gtk_tree_view_get_model (GTK_TREE_VIEW (tree_view));
+      details_view->reveal_column = NULL;
+      if (gtk_tree_view_column_get_visible (column))
+        {
+          if (model != NULL && gtk_tree_model_iter_n_children (model, NULL) > 0)
+            gtk_tree_view_scroll_to_cell (GTK_TREE_VIEW (tree_view), NULL, column, FALSE, 0.0, 0.0);
+          else
+            {
+              /* GTK's scroll_to_cell requires a row even for horizontal-only
+               * scrolling. Headers must also be reachable in empty folders. */
+              GdkRectangle area;
+              GtkAdjustment *adjustment = gtk_scrollable_get_hadjustment (GTK_SCROLLABLE (tree_view));
+              gtk_tree_view_get_background_area (GTK_TREE_VIEW (tree_view), NULL, column, &area);
+              gdouble start = area.x + gtk_adjustment_get_value (adjustment);
+              gtk_adjustment_clamp_page (adjustment, start, start + area.width);
+            }
+        }
+    }
+}
+
+static void
 thunar_details_view_columns_changed (ThunarColumnModel *column_model,
                                      ThunarDetailsView *details_view)
 {
   const ThunarColumn *column_order;
   ThunarColumn        column;
+  GtkTreeViewColumn  *newly_visible = NULL;
 
   _thunar_return_if_fail (THUNAR_IS_DETAILS_VIEW (details_view));
   _thunar_return_if_fail (THUNAR_IS_COLUMN_MODEL (column_model));
@@ -937,6 +974,9 @@ thunar_details_view_columns_changed (ThunarColumnModel *column_model,
   for (column = 0; column < THUNAR_N_VISIBLE_COLUMNS; ++column)
     {
       /* apply the new visibility for the tree view column */
+      if (!gtk_tree_view_column_get_visible (details_view->columns[column])
+          && thunar_column_model_get_column_visible (column_model, column))
+        newly_visible = details_view->columns[column];
       gtk_tree_view_column_set_visible (details_view->columns[column], thunar_column_model_get_column_visible (column_model, column));
 
       /* change the order of the column relative to its predecessor */
@@ -946,6 +986,14 @@ thunar_details_view_columns_changed (ThunarColumnModel *column_model,
                                            details_view->columns[column_order[column]],
                                            details_view->columns[column_order[column - 1]]);
         }
+    }
+
+  /* Wait for layout to assign the new column its width before scrolling.
+   * Saved/user-resized columns can otherwise leave it beyond the viewport. */
+  if (newly_visible != NULL && gtk_widget_get_realized (GTK_WIDGET (details_view->tree_view)))
+    {
+      details_view->reveal_column = newly_visible;
+      gtk_widget_queue_resize (GTK_WIDGET (details_view->tree_view));
     }
 }
 
