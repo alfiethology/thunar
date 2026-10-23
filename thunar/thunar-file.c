@@ -2307,20 +2307,32 @@ thunar_file_get_size_string (const ThunarFile *file)
 
 
 /**
- * thunar_file_get_size_in_bytes_string:
+ * thunar_file_get_compact_size_string:
  * @file : a #ThunarFile instance.
  *
- * Returns the size in bytes of the file as text.
+ * Returns the file size with one decimal place and a compact decimal unit,
+ * for example 23.7KB. A KB is 1000 bytes; B denotes a single byte.
  * You'll need to free the result using g_free()
  * if you're done with it.
  *
- * Return value: the size of @file in bytes.
+ * Return value: the size of @file in a compact human-readable format.
  **/
 gchar *
-thunar_file_get_size_in_bytes_string (const ThunarFile *file)
+thunar_file_get_compact_size_string (const ThunarFile *file)
 {
+  static const gchar *units[] = { "B", "KB", "MB", "GB", "TB", "PB", "EB" };
+  gdouble             size;
+  guint               unit = 0;
+
   _thunar_return_val_if_fail (THUNAR_IS_FILE (file), NULL);
-  return g_strdup_printf ("%'"G_GUINT64_FORMAT, thunar_file_get_size (file));
+  size = thunar_file_get_size (file);
+  /* Promote values that would round to 1000.0 in the smaller unit too. */
+  while (size >= 999.95 && unit + 1 < G_N_ELEMENTS (units))
+    {
+      size /= 1000.0;
+      ++unit;
+    }
+  return g_strdup_printf ("%.1f%s", size, units[unit]);
 }
 
 

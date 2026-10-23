@@ -99,7 +99,7 @@ GType thunar_date_style_get_type (void) G_GNUC_CONST;
  * @THUNAR_COLUMN_OWNER         : owner's name.
  * @THUNAR_COLUMN_PERMISSIONS   : permissions bits.
  * @THUNAR_COLUMN_SIZE          : file size.
- * @THUNAR_COLUMN_SIZE_IN_BYTES : file size in bytes.
+ * @THUNAR_COLUMN_SIZE_IN_BYTES : compact human-readable file size (legacy identifier).
  * @THUNAR_COLUMN_TYPE          : file type (e.g. 'plain text document').
  * @THUNAR_COLUMN_FILE          : #ThunarFile object.
  * @THUNAR_COLUMN_FILE_NAME     : real file name.
