@@ -434,7 +434,20 @@ thunar_list_model_start_size_jobs (ThunarListModel *store)
 static gchar *
 thunar_list_model_folder_size_string (ThunarListModel *store, ThunarFile *file)
 {
-  ThunarFolderSize *size = g_hash_table_lookup (store->folder_sizes, file);
+  ThunarFolderSize *size;
+
+  /* Opening home must not recursively scan all of its child folders. */
+  if (store->folder != NULL)
+    {
+      GFile *home = g_file_new_for_path (g_get_home_dir ());
+      gboolean is_home = g_file_equal (home, thunar_file_get_file (
+          thunar_folder_get_corresponding_file (store->folder)));
+      g_object_unref (home);
+      if (is_home)
+        return g_strdup ("-");
+    }
+
+  size = g_hash_table_lookup (store->folder_sizes, file);
   if (size == NULL)
     {
       size = g_new0 (ThunarFolderSize, 1);
