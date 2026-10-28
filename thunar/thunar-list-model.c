@@ -2549,7 +2549,8 @@ thunar_list_model_rg_file (const gchar *path,
   if (!matches || exo_job_is_cancelled (EXO_JOB (search->job)))
     return;
 
-  location = g_file_resolve_relative_path (search->directory, path);
+  location = g_path_is_absolute (path) ? g_file_new_for_path (path)
+                                      : g_file_resolve_relative_path (search->directory, path);
   file = thunar_file_get (location, NULL);
   g_object_unref (location);
   if (file == NULL)

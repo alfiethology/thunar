@@ -80,13 +80,22 @@ KiB; inclusive modified-date ranges; case sensitivity; hidden files; and
 subfolder searches. Empty filters match any value, and maximum size 0 means
 unlimited. Filters are combined, and matching files appear in the normal view.
 
-Use **Add rule** for additional text conditions. Each row chooses **Include** or
-**Exclude**, and **Filename** (the default) or **File contents**. All include
+Use **Add rule** for additional conditions. Each row chooses **Include** or
+**Exclude**, and **Filename** (the default), **File contents**, or **Directory**. All text include
 rules must match and no excluded text may occur; separate content includes can
 match on different lines in a file. Rule text is literal, and blank rows are
 ignored. The separate filename filter still supports words, wildcards and
 regular expressions. Rules can be removed and are retained when reopening the
 dialog for the current search.
+
+For a **Directory** rule, type a folder name or path and select a suggestion.
+Name suggestions look in **Search in** and Home in the background; full paths
+also work for other locations. Include adds that directory as another search
+root alongside **Search in**. Exclude skips that directory and its entire
+subtree in every search root, including during content scans. Exclusions take
+precedence over includes, overlapping results appear once, and the same text,
+date, size, hidden-file and subfolder settings apply to all roots. Directory
+rules are restored when reopening Advanced Search for the current search.
 
 **Exclude directories** hides folders from Advanced Search results without
 preventing searches inside them. Content rules return files only, since

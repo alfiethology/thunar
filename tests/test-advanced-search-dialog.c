@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include <thunar/thunar-advanced-search-dialog.h>
+#include <glib/gstdio.h>
 
 static void
 find_named (GtkWidget *widget, const gchar *name, GPtrArray *matches)
@@ -44,6 +45,156 @@ finish_preview (gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+static void
+dispatch_for (gint64 microseconds)
+{
+  gint64 deadline = g_get_monotonic_time () + microseconds;
+  do
+    {
+      while (g_main_context_iteration (NULL, FALSE));
+      g_usleep (1000);
+    }
+  while (g_get_monotonic_time () < deadline);
+}
+
+static gboolean
+completion_popup_visible (GtkWidget *widget, GtkTreeModel *model)
+{
+  if (GTK_IS_TREE_VIEW (widget) && gtk_widget_get_mapped (widget))
+    {
+      GtkTreeModel *shown = gtk_tree_view_get_model (GTK_TREE_VIEW (widget));
+      if (GTK_IS_TREE_MODEL_FILTER (shown) && gtk_tree_model_filter_get_model (GTK_TREE_MODEL_FILTER (shown)) == model)
+        return TRUE;
+    }
+  if (GTK_IS_CONTAINER (widget))
+    {
+      GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+      gboolean found = FALSE;
+      for (GList *lp = children; lp != NULL && !found; lp = lp->next)
+        found = completion_popup_visible (lp->data, model);
+      g_list_free (children);
+      return found;
+    }
+  return FALSE;
+}
+
+static void
+test_directory_rules (void)
+{
+  gchar *root = g_dir_make_tmp ("thunar-directory-rules-XXXXXX", NULL);
+  gchar *first = g_build_filename (root, "needle-first", NULL);
+  gchar *second = g_build_filename (root, "needle-second", NULL);
+  gchar *prefix = g_build_filename (root, "needle-", NULL);
+  g_assert_cmpint (g_mkdir_with_parents (first, 0700), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (second, 0700), ==, 0);
+  GFile *directory = g_file_new_for_path (root);
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  GtkWidget *dialog = thunar_advanced_search_dialog_new (NULL, directory, options);
+  GtkWidget *target = last_named (dialog, "search-rule-target");
+  GtkWidget *entry = last_named (dialog, "search-rule-text");
+  gtk_combo_box_set_active (GTK_COMBO_BOX (target), 2);
+  /* Automated checks must not capture keyboard input from the user's desktop. */
+  gtk_window_set_accept_focus (GTK_WINDOW (dialog), g_getenv ("THUNAR_TEST_REQUIRE_POPUP") != NULL);
+  gtk_widget_show (dialog);
+  gtk_widget_grab_focus (entry);
+  if (g_getenv ("THUNAR_TEST_REQUIRE_POPUP") != NULL)
+    {
+      gtk_window_present (GTK_WINDOW (dialog));
+      dispatch_for (50000);
+      GdkEvent *focus = gdk_event_new (GDK_FOCUS_CHANGE);
+      focus->focus_change.in = TRUE;
+      focus->focus_change.window = g_object_ref (gtk_widget_get_window (dialog));
+      gtk_widget_send_focus_change (dialog, focus);
+      gdk_event_free (focus);
+      gchar *partial = g_strndup (prefix, strlen (prefix) - 1);
+      gtk_entry_set_text (GTK_ENTRY (entry), partial);
+      g_free (partial);
+      gtk_editable_set_position (GTK_EDITABLE (entry), -1);
+      /* Popup grabs need the input device captured from an actual key event. */
+      GdkEvent *key = gdk_event_new (GDK_KEY_PRESS);
+      key->key.window = g_object_ref (gtk_widget_get_window (entry));
+      key->key.send_event = TRUE;
+      key->key.keyval = GDK_KEY_minus;
+      key->key.string = g_strdup ("-");
+      key->key.length = 1;
+      gdk_event_set_device (key, gdk_seat_get_keyboard (gdk_display_get_default_seat (gdk_display_get_default ())));
+      gtk_main_do_event (key);
+      gdk_event_free (key);
+    }
+  else
+    gtk_entry_set_text (GTK_ENTRY (entry), prefix);
+  g_assert_cmpstr (gtk_entry_get_text (GTK_ENTRY (entry)), ==, prefix);
+  GtkEntryCompletion *completion = gtk_entry_get_completion (GTK_ENTRY (entry));
+  g_assert_nonnull (completion);
+  GtkTreeModel *model = gtk_entry_completion_get_model (completion);
+  gint64 deadline = g_get_monotonic_time () + 4 * G_USEC_PER_SEC;
+  while (gtk_tree_model_iter_n_children (model, NULL) < 2 && g_get_monotonic_time () < deadline)
+    dispatch_for (10000);
+  g_assert_cmpint (gtk_tree_model_iter_n_children (model, NULL), ==, 2);
+  dispatch_for (500000);
+  GList *windows = gtk_window_list_toplevels ();
+  gboolean visible = FALSE;
+  for (GList *lp = windows; lp != NULL; lp = lp->next)
+    {
+      visible |= completion_popup_visible (lp->data, model);
+    }
+  g_list_free (windows);
+  /* Mapping/grabbing a popup depends on desktop focus policy. Keep the model
+   * and selection checks mandatory, with an opt-in check for interactive QA. */
+  if (g_getenv ("THUNAR_TEST_REQUIRE_POPUP") != NULL)
+    g_assert_true (visible);
+  /* Selecting a suggestion copies the actual absolute folder path. */
+  GtkTreeIter iter;
+  g_assert_true (gtk_tree_model_get_iter_first (model, &iter));
+  gboolean handled = FALSE;
+  g_signal_emit_by_name (completion, "match-selected", model, &iter, &handled);
+  GError *error = NULL;
+  ThunarSearchOptions *result = thunar_advanced_search_dialog_get_options (dialog, &error);
+  g_assert_no_error (error);
+  g_assert_cmpuint (result->rules->len, ==, 1);
+  ThunarSearchRule *rule = g_ptr_array_index (result->rules, 0);
+  g_assert_true (rule->is_directory);
+  g_assert_false (rule->exclude);
+  g_assert_true (g_path_is_absolute (rule->text));
+  gtk_button_clicked (GTK_BUTTON (last_named (dialog, "add-search-rule")));
+  gtk_combo_box_set_active (GTK_COMBO_BOX (last_named (dialog, "search-rule-target")), 2);
+  gtk_combo_box_set_active (GTK_COMBO_BOX (last_named (dialog, "search-rule-action")), 1);
+  gtk_entry_set_text (GTK_ENTRY (last_named (dialog, "search-rule-text")), second);
+  thunar_search_options_free (result);
+  result = thunar_advanced_search_dialog_get_options (dialog, &error);
+  g_assert_no_error (error);
+  g_assert_cmpuint (result->rules->len, ==, 2);
+  rule = g_ptr_array_index (result->rules, 1);
+  g_assert_true (rule->is_directory);
+  g_assert_true (rule->exclude);
+  GtkWidget *reopened = thunar_advanced_search_dialog_new (NULL, directory, result);
+  ThunarSearchOptions *saved = thunar_advanced_search_dialog_get_options (reopened, &error);
+  g_assert_no_error (error);
+  g_assert_true (((ThunarSearchRule *) g_ptr_array_index (saved->rules, 1))->is_directory);
+  g_assert_true (((ThunarSearchRule *) g_ptr_array_index (saved->rules, 1))->exclude);
+  thunar_search_options_free (saved);
+  thunar_search_options_free (result);
+  gtk_widget_destroy (reopened);
+  gtk_entry_set_text (GTK_ENTRY (last_named (dialog, "search-rule-text")), "/does-not-exist-thunar-directory");
+  result = thunar_advanced_search_dialog_get_options (dialog, &error);
+  g_assert_null (result);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+  g_clear_error (&error);
+  /* Destruction cancels both queued and running suggestion requests. */
+  gtk_widget_destroy (dialog);
+  dispatch_for (300000);
+  thunar_search_options_free (options);
+  g_object_unref (directory);
+  g_rmdir (first);
+  g_rmdir (second);
+  g_rmdir (root);
+  g_free (prefix);
+  g_free (second);
+  g_free (first);
+  g_free (root);
+  g_print ("Directory rule suggestions, selection, validation and round trip passed\n");
+}
+
 int
 main (int argc, char **argv)
 {
@@ -62,6 +213,7 @@ main (int argc, char **argv)
       g_print ("No display available; skipping GTK dialog test\n");
       return 77;
     }
+  test_directory_rules ();
   directory = g_file_new_for_path (g_get_tmp_dir ());
   options = thunar_search_options_new ();
   g_free (options->name);
@@ -155,9 +307,20 @@ main (int argc, char **argv)
 
   if (g_getenv ("THUNAR_SEARCH_DIALOG_SCREENSHOT") != NULL)
     {
-      gtk_widget_show (dialog);
-      g_timeout_add (150, finish_preview, dialog);
+      ThunarSearchOptions *preview_options = thunar_search_options_copy (options);
+      g_ptr_array_set_size (preview_options->rules, 0);
+      g_free (preview_options->content);
+      preview_options->content = g_strdup ("");
+      thunar_search_options_add_rule (preview_options, "report", FALSE, FALSE);
+      thunar_search_options_add_directory (preview_options, g_get_home_dir (), FALSE);
+      if (g_file_test (g_get_user_cache_dir (), G_FILE_TEST_IS_DIR))
+        thunar_search_options_add_directory (preview_options, g_get_user_cache_dir (), TRUE);
+      GtkWidget *preview = thunar_advanced_search_dialog_new (NULL, directory, preview_options);
+      thunar_search_options_free (preview_options);
+      gtk_widget_show (preview);
+      g_timeout_add (150, finish_preview, preview);
       gtk_main ();
+      gtk_widget_destroy (preview);
     }
   while (gtk_events_pending ())
     gtk_main_iteration ();

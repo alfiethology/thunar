@@ -270,6 +270,82 @@ test_directories (Fixture *fixture, gconstpointer unused)
 }
 
 static void
+collect_scope (const gchar *path, gpointer user_data)
+{
+  Fixture *fixture = user_data;
+  GFile *file = g_path_is_absolute (path) ? g_file_new_for_path (path)
+                                        : g_file_resolve_relative_path (fixture->directory, path);
+  gchar *absolute = g_file_get_path (file);
+  g_assert_false (g_hash_table_contains (fixture->paths, absolute));
+  g_hash_table_add (fixture->paths, absolute);
+  g_object_unref (file);
+}
+
+static void
+run_scope (Fixture *fixture, GFile *base, ThunarSearchOptions *options, guint count)
+{
+  Fixture scoped = *fixture;
+  GError *error = NULL;
+  scoped.directory = base;
+  g_hash_table_remove_all (fixture->paths);
+  g_assert_true (thunar_rg_search_full (base, options, fixture->cancellable, collect_scope, &scoped, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (g_hash_table_size (fixture->paths), ==, count);
+}
+
+static void
+test_directory_rules (Fixture *fixture, gconstpointer unused)
+{
+  ThunarSearchOptions *options = thunar_search_options_new ();
+  write_file (fixture, "base/keep.txt", "needle");
+  write_file (fixture, "base/skip [x]?/blocked.txt", "needle");
+  write_file (fixture, "base/skip [x]? suffix/allowed.txt", "needle");
+  write_file (fixture, "base/sub/nested.txt", "needle");
+  write_file (fixture, "extra/extra.txt", "needle");
+  write_file (fixture, "extra/sub/deeper.txt", "needle");
+  GFile *base = g_file_get_child (fixture->directory, "base");
+  gchar *extra = g_build_filename (fixture->path, "extra", NULL);
+  gchar *excluded = g_build_filename (fixture->path, "base/skip [x]?", NULL);
+  gchar *overlap = g_build_filename (fixture->path, "base/sub", NULL);
+  gchar *extra_sub = g_build_filename (extra, "sub", NULL);
+  gchar *base_path = g_file_get_path (base);
+  options->exclude_directories = TRUE;
+  run_scope (fixture, base, options, 4);
+  thunar_search_options_add_directory (options, extra, FALSE);
+  run_scope (fixture, base, options, 6); /* Adds a root outside Search in. */
+  thunar_search_options_add_directory (options, excluded, TRUE);
+  run_scope (fixture, base, options, 5); /* Literal path, not a wildcard/name prefix. */
+  thunar_search_options_add_directory (options, overlap, FALSE);
+  thunar_search_options_add_directory (options, extra, FALSE);
+  run_scope (fixture, base, options, 5); /* Overlapping and duplicate roots are deduplicated. */
+  thunar_search_options_add_directory (options, extra_sub, TRUE);
+  run_scope (fixture, base, options, 4);
+  thunar_search_options_add_rule (options, "needle", FALSE, TRUE);
+  run_scope (fixture, base, options, 4); /* Content rules apply to every root. */
+  ThunarSearchOptions *copy = thunar_search_options_copy (options);
+  g_assert_true (((ThunarSearchRule *) g_ptr_array_index (copy->rules, 0))->is_directory);
+  run_scope (fixture, base, copy, 4);
+  thunar_search_options_free (copy);
+  thunar_search_options_add_directory (options, base_path, TRUE);
+  run_scope (fixture, base, options, 1); /* Exclusion wins, even for a search root. */
+  thunar_search_options_add_directory (options, extra, TRUE);
+  run_scope (fixture, base, options, 0);
+  thunar_search_options_free (options);
+  options = thunar_search_options_new ();
+  options->recursive = FALSE;
+  options->exclude_directories = TRUE;
+  thunar_search_options_add_directory (options, extra, FALSE);
+  run_scope (fixture, base, options, 2);
+  thunar_search_options_free (options);
+  g_object_unref (base);
+  g_free (base_path);
+  g_free (extra_sub);
+  g_free (overlap);
+  g_free (excluded);
+  g_free (extra);
+}
+
+static void
 cancel_directory_result (const gchar *path, gpointer user_data)
 {
   Fixture *fixture = user_data;
@@ -521,6 +597,7 @@ main (int argc, char **argv)
   g_test_add ("/rg/files", Fixture, NULL, setup, test_files, teardown);
   g_test_add ("/rg/empty", Fixture, NULL, setup, test_empty, teardown);
   g_test_add ("/rg/directories", Fixture, NULL, setup, test_directories, teardown);
+  g_test_add ("/rg/directory-rules", Fixture, NULL, setup, test_directory_rules, teardown);
   g_test_add ("/rg/directory-cancellation", Fixture, NULL, setup, test_directory_cancellation, teardown);
   g_test_add ("/rg/inaccessible-paths", Fixture, NULL, setup, test_inaccessible_paths, teardown);
   g_test_add ("/rg/pre-cancelled", Fixture, NULL, setup, test_pre_cancelled, teardown);

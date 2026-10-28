@@ -26,6 +26,13 @@ thunar_search_options_add_rule (ThunarSearchOptions *options, const gchar *text,
   g_ptr_array_add (options->rules, rule);
 }
 
+void
+thunar_search_options_add_directory (ThunarSearchOptions *options, const gchar *path, gboolean exclude)
+{
+  thunar_search_options_add_rule (options, path, exclude, FALSE);
+  ((ThunarSearchRule *) g_ptr_array_index (options->rules, options->rules->len - 1))->is_directory = TRUE;
+}
+
 ThunarSearchOptions *
 thunar_search_options_new (void)
 {
@@ -55,6 +62,7 @@ thunar_search_options_copy (const ThunarSearchOptions *options)
     {
       ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
       thunar_search_options_add_rule (copy, rule->text, rule->exclude, rule->in_contents);
+      ((ThunarSearchRule *) g_ptr_array_index (copy->rules, i))->is_directory = rule->is_directory;
     }
   return copy;
 }
@@ -108,6 +116,16 @@ thunar_search_options_validate (const ThunarSearchOptions *options,
                                 GError                   **error)
 {
   GRegex *regex;
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (rule->is_directory && !g_path_is_absolute (rule->text))
+        {
+          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                               "Directory rules require an absolute folder path");
+          return FALSE;
+        }
+    }
   if (options->min_size > options->max_size)
     {
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -226,7 +244,7 @@ thunar_search_matches (GFile                     *directory,
   for (guint i = 0; matches && i < options->rules->len; ++i)
     {
       ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
-      if (!rule->in_contents && *rule->text != '\0')
+      if (!rule->is_directory && !rule->in_contents && *rule->text != '\0')
         {
           gchar *haystack = options->case_sensitive ? g_strdup (name) : g_utf8_casefold (name, -1);
           gchar *needle = options->case_sensitive ? g_strdup (rule->text) : g_utf8_casefold (rule->text, -1);
@@ -264,6 +282,37 @@ thunar_rg_search_cancelled (GCancellable *cancellable,
                             gpointer      user_data)
 {
   g_subprocess_force_exit (G_SUBPROCESS (user_data));
+}
+
+static gboolean
+thunar_search_path_excluded (GFile *file, const ThunarSearchOptions *options)
+{
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (rule->is_directory && rule->exclude)
+        {
+          GFile *excluded = g_file_new_for_path (rule->text);
+          gboolean matches = g_file_equal (file, excluded) || g_file_has_prefix (file, excluded);
+          g_object_unref (excluded);
+          if (matches)
+            return TRUE;
+        }
+    }
+  return FALSE;
+}
+
+static gchar *
+thunar_search_exclusion_glob (const gchar *relative)
+{
+  GString *glob = g_string_new ("!/");
+  for (const gchar *p = relative; *p != '\0'; ++p)
+    {
+      if (strchr ("\\*?[]{}", *p) != NULL)
+        g_string_append_c (glob, '\\');
+      g_string_append_c (glob, *p);
+    }
+  return g_string_free (glob, FALSE);
 }
 
 
@@ -329,13 +378,33 @@ thunar_rg_search_single (GFile                     *directory,
       argv[argc++] = "--regexp";
       argv[argc++] = options->content;
     }
-  argv[argc++] = "--";
-  argv[argc++] = ".";
-  argv[argc] = NULL;
+  GPtrArray *arguments = g_ptr_array_new_with_free_func (g_free);
+  for (guint i = 0; i < argc; ++i)
+    g_ptr_array_add (arguments, g_strdup (argv[i]));
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (rule->is_directory && rule->exclude)
+        {
+          GFile *excluded = g_file_new_for_path (rule->text);
+          gchar *relative = g_file_get_relative_path (directory, excluded);
+          if (relative != NULL)
+            {
+              g_ptr_array_add (arguments, g_strdup ("--glob"));
+              g_ptr_array_add (arguments, thunar_search_exclusion_glob (relative));
+              g_free (relative);
+            }
+          g_object_unref (excluded);
+        }
+    }
+  g_ptr_array_add (arguments, g_strdup ("--"));
+  g_ptr_array_add (arguments, g_strdup ("."));
+  g_ptr_array_add (arguments, NULL);
 
   directory_path = g_file_get_path (directory);
   if (directory_path == NULL)
     {
+      g_ptr_array_unref (arguments);
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
                            "ripgrep requires a local search directory");
       return FALSE;
@@ -347,7 +416,8 @@ thunar_rg_search_single (GFile                     *directory,
                                       | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
   g_subprocess_launcher_set_cwd (launcher, directory_path);
   g_free (directory_path);
-  process = g_subprocess_launcher_spawnv (launcher, argv, error);
+  process = g_subprocess_launcher_spawnv (launcher, (const gchar * const *) arguments->pdata, error);
+  g_ptr_array_unref (arguments);
   g_object_unref (launcher);
   if (process == NULL)
     return FALSE;
@@ -450,6 +520,15 @@ thunar_search_directories (GFile *directory, const ThunarSearchOptions *options,
                   && (options->show_hidden || (child_name[0] != '.' && !g_str_has_suffix (child_name, "~"))))
                 {
                   gchar *path = g_build_filename (relative, child_name, NULL);
+                  GFile *child = g_file_resolve_relative_path (directory, path);
+                  gboolean excluded = thunar_search_path_excluded (child, options);
+                  g_object_unref (child);
+                  if (excluded)
+                    {
+                      g_free (path);
+                      g_object_unref (info);
+                      continue;
+                    }
                   if (thunar_search_matches (directory, path, options, regex, terms, cancellable))
                     callback (path, user_data);
                   if (options->recursive)
@@ -483,13 +562,13 @@ thunar_search_intersect (const gchar *path, gpointer user_data)
     }
 }
 
-gboolean
-thunar_rg_search_full (GFile *directory, const ThunarSearchOptions *options,
+static gboolean
+thunar_rg_search_root (GFile *directory, const ThunarSearchOptions *options,
                        GCancellable *cancellable, ThunarRgSearchFunc callback,
                        gpointer user_data, GError **error)
 {
   GPtrArray *contents;
-  ThunarSearchRule legacy = { options->content, FALSE, TRUE };
+  ThunarSearchRule legacy = { options->content, FALSE, TRUE, FALSE };
   ThunarSearchIntersection intersection = { NULL, NULL, callback, user_data };
   gboolean success = TRUE;
   if (!thunar_search_options_validate (options, error))
@@ -500,7 +579,7 @@ thunar_rg_search_full (GFile *directory, const ThunarSearchOptions *options,
   for (guint i = 0; i < options->rules->len; ++i)
     {
       ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
-      if (rule->in_contents && *rule->text != '\0')
+      if (!rule->is_directory && rule->in_contents && *rule->text != '\0')
         g_ptr_array_add (contents, rule);
     }
   /* Filename-only searches keep the streaming rg --files fast path. Content
@@ -528,5 +607,87 @@ thunar_rg_search_full (GFile *directory, const ThunarSearchOptions *options,
     }
   g_clear_pointer (&intersection.previous, g_hash_table_unref);
   g_ptr_array_unref (contents);
+  return success;
+}
+
+typedef struct
+{
+  GFile *base;
+  GFile *root;
+  const ThunarSearchOptions *options;
+  GHashTable *seen;
+  ThunarRgSearchFunc callback;
+  gpointer user_data;
+} ThunarSearchScope;
+
+static void
+thunar_search_scope_result (const gchar *path, gpointer user_data)
+{
+  ThunarSearchScope *scope = user_data;
+  GFile *file = g_file_resolve_relative_path (scope->root, path);
+  if (!thunar_search_path_excluded (file, scope->options) && !g_hash_table_contains (scope->seen, file))
+    {
+      gchar *relative = g_file_get_relative_path (scope->base, file);
+      gchar *result = relative != NULL ? g_strconcat ("./", relative, NULL) : g_file_get_path (file);
+      g_hash_table_add (scope->seen, g_object_ref (file));
+      scope->callback (result, scope->user_data);
+      g_free (relative);
+      g_free (result);
+    }
+  g_object_unref (file);
+}
+
+gboolean
+thunar_rg_search_full (GFile *directory, const ThunarSearchOptions *options,
+                       GCancellable *cancellable, ThunarRgSearchFunc callback,
+                       gpointer user_data, GError **error)
+{
+  GPtrArray *roots = g_ptr_array_new_with_free_func (g_object_unref);
+  gboolean scoped = FALSE;
+  gboolean success = TRUE;
+  if (!thunar_search_options_validate (options, error))
+    {
+      g_ptr_array_unref (roots);
+      return FALSE;
+    }
+  g_ptr_array_add (roots, g_object_ref (directory));
+  for (guint i = 0; i < options->rules->len; ++i)
+    {
+      ThunarSearchRule *rule = g_ptr_array_index (options->rules, i);
+      if (rule->is_directory)
+        {
+          scoped = TRUE;
+          if (!rule->exclude)
+            {
+              GFile *included = g_file_new_for_path (rule->text);
+              gboolean duplicate = FALSE;
+              for (guint j = 0; j < roots->len; ++j)
+                if (g_file_equal (included, g_ptr_array_index (roots, j)))
+                  duplicate = TRUE;
+              if (duplicate)
+                g_object_unref (included);
+              else
+                g_ptr_array_add (roots, included);
+            }
+        }
+    }
+  if (!scoped)
+    success = thunar_rg_search_root (directory, options, cancellable, callback, user_data, error);
+  else
+    {
+      ThunarSearchScope scope = { directory, NULL, options,
+          g_hash_table_new_full (g_file_hash, (GEqualFunc) g_file_equal, g_object_unref, NULL), callback, user_data };
+      for (guint i = 0; success && i < roots->len; ++i)
+        {
+          scope.root = g_ptr_array_index (roots, i);
+          if (g_cancellable_set_error_if_cancelled (cancellable, error))
+            success = FALSE;
+          else if (!thunar_search_path_excluded (scope.root, options))
+            success = thunar_rg_search_root (scope.root, options, cancellable,
+                                             thunar_search_scope_result, &scope, error);
+        }
+      g_hash_table_unref (scope.seen);
+    }
+  g_ptr_array_unref (roots);
   return success;
 }

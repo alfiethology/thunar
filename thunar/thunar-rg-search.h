@@ -20,6 +20,7 @@ typedef struct
   gchar    *text;
   gboolean  exclude;
   gboolean  in_contents; /* FALSE searches the basename, never its parent path. */
+  gboolean  is_directory; /* text is an absolute search-root/excluded-subtree path */
 } ThunarSearchRule;
 
 typedef struct
@@ -45,6 +46,9 @@ void                 thunar_search_options_add_rule (ThunarSearchOptions *option
                                                      const gchar         *text,
                                                      gboolean             exclude,
                                                      gboolean             in_contents);
+void                 thunar_search_options_add_directory (ThunarSearchOptions *options,
+                                                          const gchar         *path,
+                                                          gboolean             exclude);
 ThunarSearchOptions *thunar_search_options_copy      (const ThunarSearchOptions *options);
 void                 thunar_search_options_free      (ThunarSearchOptions       *options);
 gboolean             thunar_search_options_validate  (const ThunarSearchOptions *options,
@@ -54,7 +58,8 @@ gboolean             thunar_search_options_set_dates (ThunarSearchOptions       
                                                       const gchar               *before,
                                                       GError                   **error);
 
-/* Paths are relative to the search directory, in filename encoding. */
+/* Paths are relative to the main search directory, or absolute for added roots,
+ * in filename encoding. */
 typedef void (*ThunarRgSearchFunc) (const gchar *path,
                                    gpointer     user_data);
 
