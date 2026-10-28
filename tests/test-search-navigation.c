@@ -228,6 +228,24 @@ test_column_visibility (ThunarApplication *app, ThunarFile *source, gboolean fix
 }
 
 static void
+assert_selected_path (ThunarStandardView *view, ThunarFile *file)
+{
+  GList selected = { file, NULL, NULL };
+  gchar *path = g_strconcat ("~/desktop/", thunar_file_get_display_name (file), NULL);
+  thunar_view_set_selected_files (THUNAR_VIEW (view), &selected);
+  dispatch_for (100000);
+  const gchar *text = thunar_view_get_statusbar_text (THUNAR_VIEW (view));
+  g_assert_nonnull (strstr (text, path));
+  GtkWidget *statusbar = find_widget (gtk_widget_get_toplevel (GTK_WIDGET (view)), GTK_TYPE_STATUSBAR);
+  g_assert_nonnull (statusbar);
+  gchar *tooltip = gtk_widget_get_tooltip_text (statusbar);
+  g_assert_nonnull (tooltip);
+  g_assert_nonnull (strstr (tooltip, path));
+  g_free (tooltip);
+  g_free (path);
+}
+
+static void
 test_navigation (ThunarApplication *app, ThunarFile *source, ThunarFile *destination, gboolean pending)
 {
   ThunarPreferences *preferences = thunar_preferences_get ();
@@ -245,6 +263,18 @@ test_navigation (ThunarApplication *app, ThunarFile *source, ThunarFile *destina
 
   window = thunar_application_open_window (app, source, NULL, NULL, TRUE);
   dispatch_for (150000);
+  view = THUNAR_STANDARD_VIEW (find_widget (window, THUNAR_TYPE_STANDARD_VIEW));
+  GFile *selected_location = g_file_get_child (thunar_file_get_file (source), "the.txt");
+  ThunarFile *selected_file = thunar_file_get (selected_location, NULL);
+  g_assert_nonnull (selected_file);
+  g_object_unref (selected_location);
+  assert_selected_path (view, selected_file);
+  selected_location = g_file_get_child (thunar_file_get_file (source), "sample folder");
+  ThunarFile *selected_folder = thunar_file_get (selected_location, NULL);
+  g_assert_nonnull (selected_folder);
+  g_object_unref (selected_location);
+  assert_selected_path (view, selected_folder);
+  g_object_unref (selected_folder);
   thunar_window_action_search (THUNAR_WINDOW (window));
   location = find_widget (window, THUNAR_TYPE_LOCATION_BAR);
   g_assert_nonnull (location);
@@ -266,6 +296,8 @@ test_navigation (ThunarApplication *app, ThunarFile *source, ThunarFile *destina
     g_assert_nonnull (thunar_list_model_get_job (view->model));
   else
     g_assert_null (thunar_list_model_get_job (view->model));
+  assert_selected_path (view, selected_file);
+  g_object_unref (selected_file);
 
   /* Navigation can select a different view type for the destination. Before
    * the fix this handed the same job to two models and crashed on completion. */

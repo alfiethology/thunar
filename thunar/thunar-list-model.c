@@ -3647,7 +3647,26 @@ thunar_list_model_get_statusbar_text (ThunarListModel *store,
 
       if (show_display_name == TRUE)
         {
-          temp_string = g_strdup_printf (_("\"%s\""), thunar_file_get_display_name (file));
+          /* Use the selected item's location, including when it came from a
+           * recursive search, Recent, or an additional search directory. */
+          GFile *location = thunar_file_get_file (file);
+          GFile *home = g_file_new_for_path (g_get_home_dir ());
+          gchar *relative = g_file_get_relative_path (home, location);
+          gchar *path;
+          if (g_file_equal (home, location))
+            path = g_strdup ("~");
+          else if (relative != NULL)
+            {
+              gchar *display = g_filename_display_name (relative);
+              path = g_strconcat ("~/", display, NULL);
+              g_free (display);
+            }
+          else
+            path = g_file_get_parse_name (location);
+          g_free (relative);
+          g_object_unref (home);
+          temp_string = g_strdup_printf (_("\"%s\""), path);
+          g_free (path);
           text_list = g_list_append (text_list, temp_string);
         }
 
