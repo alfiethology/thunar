@@ -89,9 +89,10 @@ EOF
     topdir=$(mktemp -d)
     # RPM compresses manual pages after %install, before checking %files.
     # Match either the staged filename or its compressed form.
-    find "$stage/usr" \( -type f -o -type l \) -print \
+    find "$stage" \( -type f -o -type l \) -print \
       | sed "s|^$stage||" \
-      | sed -E 's|^(/usr/share/man/.*\.[0-9])$|\1*|' > "$topdir/files.list"
+      | sed -E -e 's|^(/usr/share/man/.*\.[0-9])$|\1*|' \
+        -e 's|^(/etc/.*)$|%config(noreplace) \1|' > "$topdir/files.list"
     cat > "$topdir/thunar.spec" <<EOF
 Name: Thunar
 Version: $version
