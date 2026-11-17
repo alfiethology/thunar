@@ -363,6 +363,7 @@ thunar-resources.h: thunar.gresource.xml
 endif
 
 EXTRA_DIST =								\
+	../tests/test-search-navigation.sh		\
 	thunar-dbus-freedesktop-interfaces.xml	\
 	thunar-dbus-service-infos.xml			\
 	thunar-marshal.list						\

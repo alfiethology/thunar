@@ -89,6 +89,7 @@ EXTRA_DIST =								\
 	FAQ								\
 	HACKING								\
 	README.md								\
+	.github/RELEASING.md						\
 	intltool-extract.in						\
 	intltool-merge.in						\
 	intltool-update.in						\

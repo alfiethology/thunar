@@ -27,6 +27,11 @@ See [NEWS](https://gitlab.xfce.org/xfce/thunar/-/blob/master/NEWS) for details o
 
 ### Installation
 
+GitHub release packages and the release workflow are described in
+[the release guide](.github/RELEASING.md). It covers Ubuntu, Debian, Fedora,
+Arch Linux, source releases for other distributions, and experimental Apple
+Silicon macOS packages with MacPorts/X11 prerequisites.
+
 From source: 
 
     % git clone https://gitlab.xfce.org/xfce/thunar
