@@ -12,7 +12,7 @@ case "$ID" in
       libxfconf-0-dev libgtk-3-dev libgudev-1.0-dev libnotify-dev libexif-dev \
       libpcre2-dev libx11-dev libsm-dev libice-dev dpkg-dev \
       dbus-x11 xvfb xauth ripgrep ca-certificates xfconf exo-utils \
-      adwaita-icon-theme fonts-dejavu-core
+      adwaita-icon-theme fonts-dejavu-core librsvg2-common at-spi2-core
     ;;
   fedora)
     dnf install -y gcc make autoconf automake libtool pkgconf-pkg-config \
