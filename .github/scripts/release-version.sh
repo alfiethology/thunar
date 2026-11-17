@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by both builders. Release tags must match the source version.
+# Sourced by the Linux package builder. Release tags must match the source version.
 version=$(sed -nE 's/^m4_define\(\[thunar_version_(major|minor|micro)\], \[([0-9]+)\]\).*/\2/p' configure.ac.in | paste -sd . -)
 revision=1
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

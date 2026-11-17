@@ -78,28 +78,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  macos:
-    name: macOS 15 Apple Silicon (experimental)
-    runs-on: macos-15
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Build Apple Silicon package with MacPorts dependencies
-        env:
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-        run: bash .github/scripts/build-macos.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-15-arm64
-          path: dist/*
-          if-no-files-found: error
-
   release:
     name: Publish draft release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, macos]
+    needs: [linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
