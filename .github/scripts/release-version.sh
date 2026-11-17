@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sourced by both builders. Release tags must match the source version.
-version=$(sed -n 's/^m4_define(\[thunar_version_\(major\|minor\|micro\)\], \[\([0-9]*\)\]).*/\2/p' configure.ac.in | paste -sd . -)
+version=$(sed -nE 's/^m4_define\(\[thunar_version_(major|minor|micro)\], \[([0-9]+)\]\).*/\2/p' configure.ac.in | paste -sd . -)
 revision=1
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Cannot read the version from configure.ac.in" >&2
