@@ -11,7 +11,8 @@ case "$ID" in
       xfce4-dev-tools libexo-2-dev libxfce4ui-2-dev libxfce4util-dev \
       libxfconf-0-dev libgtk-3-dev libgudev-1.0-dev libnotify-dev libexif-dev \
       libpcre2-dev libx11-dev libsm-dev libice-dev dpkg-dev \
-      dbus-x11 xvfb xauth ripgrep ca-certificates
+      dbus-x11 xvfb xauth ripgrep ca-certificates xfconf exo-utils \
+      adwaita-icon-theme fonts-dejavu-core
     ;;
   fedora)
     dnf install -y gcc make autoconf automake libtool pkgconf-pkg-config \
@@ -32,6 +33,8 @@ esac
 
 mkdir -p dist
 git config --global --add safe.directory /src
+export SOURCE_DATE_EPOCH
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 libdir=/usr/lib
 if [[ "$ID" == fedora ]]; then
   libdir=/usr/lib64
@@ -39,7 +42,7 @@ fi
 ./autogen.sh --prefix=/usr --libdir="$libdir" \
   --disable-static --disable-gtk-doc --disable-introspection
 make -j"$(nproc)"
-dbus-run-session -- xvfb-run -a make check
+dbus-run-session -- xvfb-run -a make check VERBOSE=1
 stage=$(mktemp -d)
 make DESTDIR="$stage" install
 find "$stage" -name '*.la' -delete
@@ -84,7 +87,11 @@ EOF
     ;;
   fedora)
     topdir=$(mktemp -d)
-    find "$stage/usr" \( -type f -o -type l \) -print | sed "s|^$stage||" > "$topdir/files.list"
+    # RPM compresses manual pages after %install, before checking %files.
+    # Match either the staged filename or its compressed form.
+    find "$stage/usr" \( -type f -o -type l \) -print \
+      | sed "s|^$stage||" \
+      | sed -E 's|^(/usr/share/man/.*\.[0-9])$|\1*|' > "$topdir/files.list"
     cat > "$topdir/thunar.spec" <<EOF
 Name: Thunar
 Version: $version
@@ -100,6 +107,9 @@ cp -a $stage/. %{buildroot}/
 %files -f $topdir/files.list
 %post -p /sbin/ldconfig
 %postun -p /sbin/ldconfig
+%changelog
+* $(date -u -d "@$SOURCE_DATE_EPOCH" '+%a %b %d %Y') Thunar release builders <noreply@localhost> - $version-$revision
+- Build the tagged Thunar checkout.
 EOF
     rpmbuild -bb --define "_topdir $topdir" "$topdir/thunar.spec"
     find "$topdir/RPMS" -name '*.rpm' -exec cp {} dist/ \;

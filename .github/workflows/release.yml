@@ -74,9 +74,23 @@ jobs:
           '
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: packages-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+      - name: Preserve configure and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.target }}
+          path: |
+            config.log
+            thunar/*.log
+            thunar/*.trs
+            tests/*.log
+            tests/*.trs
+            thunarx/*.log
+            thunarx/*.trs
+          if-no-files-found: ignore
 
   release:
     name: Publish draft release
@@ -92,6 +106,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: packages-*
           merge-multiple: true
       - name: Add checksums and installation instructions
         run: |

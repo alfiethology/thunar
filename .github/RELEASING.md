@@ -47,6 +47,11 @@ package in both the build environment and a clean container and run
 `thunar --version`. They include ripgrep as a runtime dependency
 for this checkout's search features.
 
+If a build fails, open the verbose test output in the build step or download
+the matching `logs-<target>` artifact. It includes configure logs and test
+results even when package creation fails. The `packages-<target>` artifacts
+contain only release files; diagnostic logs are excluded from releases.
+
 ## Verify a download
 
 Download `SHA256SUMS` alongside the release files and run
